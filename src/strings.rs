@@ -744,6 +744,19 @@ pub mod commands {
 			CMD_GROUP_DIFF,
 		)
 	}
+	pub fn diff_toggle_view_mode(
+		key_config: &SharedKeyConfig,
+	) -> CommandText {
+		CommandText::new(
+			format!(
+				"Toggle diff view [{}]",
+				key_config
+					.get_hint(key_config.keys.diff_toggle_view_mode),
+			),
+			"toggle unified and side-by-side diff view",
+			CMD_GROUP_DIFF,
+		)
+	}
 	pub fn diff_home_end(
 		key_config: &SharedKeyConfig,
 	) -> CommandText {

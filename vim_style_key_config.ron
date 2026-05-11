@@ -30,6 +30,7 @@
 
     diff_reset_lines: Some(( code: Char('u'), modifiers: "")),
     diff_stage_lines: Some(( code: Char('s'), modifiers: "")),
+    diff_toggle_view_mode: Some(( code: Char('m'), modifiers: "")),
 
     stashing_save: Some(( code: Char('w'), modifiers: "")),
     stashing_toggle_index: Some(( code: Char('m'), modifiers: "")),
