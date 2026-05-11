@@ -144,7 +144,7 @@ impl Default for DiffOptions {
 	fn default() -> Self {
 		Self {
 			ignore_whitespace: false,
-			context: 3,
+			context: 1,
 			interhunk_lines: 0,
 		}
 	}
