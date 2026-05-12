@@ -9,7 +9,7 @@ use crate::{
 	keys::{key_match, SharedKeyConfig},
 	options::SharedOptions,
 	queue::{InternalEvent, Queue, StackablePopupOpen},
-	strings,
+	strings, AsyncNotification,
 };
 use anyhow::Result;
 use asyncgit::{
@@ -244,7 +244,13 @@ impl InspectCommitPopup {
 
 	///
 	pub fn any_work_pending(&self) -> bool {
-		self.git_diff.is_pending() || self.details.any_work_pending()
+		self.git_diff.is_pending()
+			|| self.details.any_work_pending()
+			|| self.diff.any_work_pending()
+	}
+
+	pub fn update_async(&mut self, ev: AsyncNotification) {
+		self.diff.update_async(ev);
 	}
 
 	///
@@ -281,7 +287,12 @@ impl InspectCommitPopup {
 						self.git_diff.last()?
 					{
 						if params == diff_params {
-							self.diff.update(f.path, false, last);
+							self.diff.update(
+								f.path,
+								false,
+								last,
+								diff_params,
+							);
 							return Ok(());
 						}
 					}

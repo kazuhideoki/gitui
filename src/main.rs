@@ -131,9 +131,17 @@ pub enum SyntaxHighlightProgress {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffSyntaxHighlightProgress {
+	Progress,
+	Done,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AsyncAppNotification {
 	///
 	SyntaxHighlighting(SyntaxHighlightProgress),
+	///
+	DiffSyntaxHighlighting(DiffSyntaxHighlightProgress),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

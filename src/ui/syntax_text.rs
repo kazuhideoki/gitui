@@ -19,6 +19,7 @@ use syntect::{
 	parsing::{ParseState, ScopeStack, SyntaxSet},
 };
 
+use crate::ui::diff_syntax::HighlightedSpan;
 use crate::{AsyncAppNotification, SyntaxHighlightProgress};
 
 pub const DEFAULT_SYNTAX_THEME: &str = "base16-eighties.dark";
@@ -74,6 +75,24 @@ impl SyntaxText {
 		params: &RunParams<AsyncAppNotification, ProgressPercent>,
 		syntax: &str,
 	) -> asyncgit::Result<Self> {
+		Self::new_with_progress_notification(
+			text,
+			file_path,
+			params,
+			syntax,
+			AsyncAppNotification::SyntaxHighlighting(
+				SyntaxHighlightProgress::Progress,
+			),
+		)
+	}
+
+	pub fn new_with_progress_notification(
+		text: String,
+		file_path: &Path,
+		params: &RunParams<AsyncAppNotification, ProgressPercent>,
+		syntax: &str,
+		progress_notification: AsyncAppNotification,
+	) -> asyncgit::Result<Self> {
 		scope_time!("syntax_highlighting");
 		let mut state = {
 			scope_time!("syntax_highlighting.0");
@@ -121,9 +140,7 @@ impl SyntaxText {
 				Duration::from_millis(200),
 			);
 			params.set_progress(buffer.send_progress())?;
-			params.send(AsyncAppNotification::SyntaxHighlighting(
-				SyntaxHighlightProgress::Progress,
-			))?;
+			params.send(progress_notification)?;
 
 			for (number, line) in text.lines().enumerate() {
 				let ops = state
@@ -151,11 +168,7 @@ impl SyntaxText {
 
 				if buffer.update(number) {
 					params.set_progress(buffer.send_progress())?;
-					params.send(
-						AsyncAppNotification::SyntaxHighlighting(
-							SyntaxHighlightProgress::Progress,
-						),
-					)?;
+					params.send(progress_notification)?;
 				}
 			}
 		}
@@ -170,6 +183,29 @@ impl SyntaxText {
 	///
 	pub fn path(&self) -> &Path {
 		&self.path
+	}
+
+	pub fn line_count(&self) -> usize {
+		self.lines.len()
+	}
+
+	pub fn line_spans_owned(
+		&self,
+		zero_based_line: usize,
+	) -> Option<Vec<HighlightedSpan>> {
+		let syntax_line = self.lines.get(zero_based_line)?;
+		let line_content = self.text.lines().nth(zero_based_line)?;
+
+		Some(
+			syntax_line
+				.items
+				.iter()
+				.map(|(style, _, range)| HighlightedSpan {
+					content: line_content[range.clone()].to_string(),
+					style: syntact_style_to_tui(style),
+				})
+				.collect(),
+		)
 	}
 }
 

@@ -437,8 +437,12 @@ impl App {
 			self.select_branch_popup.update_git(ev)?;
 		}
 
+		self.status_tab.update_async(ev);
 		self.files_tab.update_async(ev)?;
 		self.blame_file_popup.update_async(ev)?;
+		self.file_revlog_popup.update_async(ev);
+		self.inspect_commit_popup.update_async(ev);
+		self.compare_commits_popup.update_async(ev);
 		self.revision_files_popup.update(ev)?;
 		self.tags_popup.update(ev);
 

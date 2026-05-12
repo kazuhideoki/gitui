@@ -15,7 +15,8 @@ use crate::{
 };
 use easy_cast::Conv;
 use git2::{
-	Delta, Diff, DiffDelta, DiffFormat, DiffHunk, Patch, Repository,
+	Blob, Delta, Diff, DiffDelta, DiffFormat, DiffHunk, ObjectType,
+	Patch, Repository,
 };
 use scopetime::scope_time;
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,17 @@ pub struct FileDiff {
 	pub sizes: (u64, u64),
 	/// size delta in bytes
 	pub size_delta: i64,
+}
+
+/// full file content for one side of a diff
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileContent {
+	/// repository-relative path
+	pub path: String,
+	/// UTF-8 file content
+	pub content: String,
+	/// original byte length
+	pub bytes: u64,
 }
 
 /// see <https://libgit2.org/libgit2/#HEAD/type/git_diff_options>
@@ -249,6 +261,131 @@ pub fn get_diff_commits(
 		get_compare_commits_diff(&repo, ids, Some(p), options)?;
 
 	raw_diff_to_file_diff(&diff, work_dir)
+}
+
+/// returns the UTF-8 worktree content for diff syntax highlighting
+pub fn diff_worktree_file_content(
+	repo_path: &RepoPath,
+	path: &str,
+) -> Result<Option<FileContent>> {
+	let repo = repo(repo_path)?;
+	let full_path = work_dir(&repo)?.join(path);
+	worktree_file_content(path, &full_path)
+}
+
+/// returns the UTF-8 index content for diff syntax highlighting
+pub fn diff_index_file_content(
+	repo_path: &RepoPath,
+	path: &str,
+) -> Result<Option<FileContent>> {
+	let repo = repo(repo_path)?;
+	let index = repo.index()?;
+	let Some(entry) = index.get_path(Path::new(path), 0) else {
+		return Ok(None);
+	};
+	let blob = repo.find_blob(entry.id)?;
+	blob_file_content(path, &blob)
+}
+
+/// returns the UTF-8 HEAD content for diff syntax highlighting
+pub fn diff_head_file_content(
+	repo_path: &RepoPath,
+	path: &str,
+) -> Result<Option<FileContent>> {
+	let repo = repo(repo_path)?;
+	let Ok(head) = get_head_repo(&repo) else {
+		return Ok(None);
+	};
+	diff_commit_file_content(repo_path, head, path)
+}
+
+/// returns the UTF-8 content for `path` from `commit`
+pub fn diff_commit_file_content(
+	repo_path: &RepoPath,
+	commit: CommitId,
+	path: &str,
+) -> Result<Option<FileContent>> {
+	let repo = repo(repo_path)?;
+	let commit = repo.find_commit(commit.into())?;
+	let tree = commit.tree()?;
+	let entry = match tree.get_path(Path::new(path)) {
+		Ok(entry) => entry,
+		Err(e) if e.code() == git2::ErrorCode::NotFound => {
+			return Ok(None);
+		}
+		Err(e) => return Err(e.into()),
+	};
+
+	if entry.kind() != Some(ObjectType::Blob) {
+		return Ok(None);
+	}
+
+	let blob = repo.find_blob(entry.id())?;
+	blob_file_content(path, &blob)
+}
+
+/// returns the first parent of `commit`, if any
+pub fn diff_commit_parent(
+	repo_path: &RepoPath,
+	commit: CommitId,
+) -> Result<Option<CommitId>> {
+	let repo = repo(repo_path)?;
+	let commit = repo.find_commit(commit.into())?;
+	Ok(commit.parent_id(0).ok().map(CommitId::new))
+}
+
+fn blob_file_content(
+	path: &str,
+	blob: &Blob<'_>,
+) -> Result<Option<FileContent>> {
+	if blob.is_binary() {
+		return Err(Error::BinaryFile);
+	}
+
+	let bytes = blob.content();
+	let content = std::str::from_utf8(bytes)
+		.map_err(|e| Error::Generic(e.to_string()))?
+		.to_string();
+
+	Ok(Some(FileContent {
+		path: path.to_string(),
+		content,
+		bytes: bytes.len() as u64,
+	}))
+}
+
+fn worktree_file_content(
+	path: &str,
+	full_path: &Path,
+) -> Result<Option<FileContent>> {
+	let Ok(meta) = fs::symlink_metadata(full_path) else {
+		return Ok(None);
+	};
+
+	let bytes = if meta.file_type().is_symlink() {
+		let path = fs::read_link(full_path)?;
+		path.to_str().map_or_else(Vec::new, |p| {
+			p.to_string().as_bytes().into()
+		})
+	} else if meta.file_type().is_dir() {
+		return Ok(None);
+	} else {
+		fs::read(full_path)?
+	};
+
+	if bytes.contains(&0) {
+		return Err(Error::BinaryFile);
+	}
+
+	let content = String::from_utf8(bytes)
+		.map_err(|e| Error::Generic(e.to_string()))?;
+	let bytes = content.len() as u64;
+
+	Ok(Some(FileContent {
+		path: path.to_string(),
+		content,
+		bytes,
+	}))
 }
 
 ///
