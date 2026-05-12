@@ -16,15 +16,49 @@ use std::{
 	rc::Rc,
 };
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct OptionsData {
 	pub tab: usize,
 	pub diff: DiffOptions,
 	pub status_show_untracked: Option<ShowUntrackedFilesConfig>,
 	pub commit_msgs: Vec<String>,
+	#[serde(default = "default_diff_syntax_highlight")]
+	pub diff_syntax_highlight: bool,
+	#[serde(default = "default_diff_syntax_max_file_bytes")]
+	pub diff_syntax_max_file_bytes: u64,
+	#[serde(default = "default_diff_syntax_max_file_lines")]
+	pub diff_syntax_max_file_lines: usize,
+}
+
+impl Default for OptionsData {
+	fn default() -> Self {
+		Self {
+			tab: 0,
+			diff: DiffOptions::default(),
+			status_show_untracked: None,
+			commit_msgs: Vec::new(),
+			diff_syntax_highlight: default_diff_syntax_highlight(),
+			diff_syntax_max_file_bytes:
+				default_diff_syntax_max_file_bytes(),
+			diff_syntax_max_file_lines:
+				default_diff_syntax_max_file_lines(),
+		}
+	}
 }
 
 const COMMIT_MSG_HISTORY_LENGTH: usize = 20;
+
+const fn default_diff_syntax_highlight() -> bool {
+	true
+}
+
+const fn default_diff_syntax_max_file_bytes() -> u64 {
+	524_288
+}
+
+const fn default_diff_syntax_max_file_lines() -> usize {
+	10_000
+}
 
 #[derive(Clone)]
 pub struct Options {
@@ -64,6 +98,18 @@ impl Options {
 
 	pub const fn diff_options(&self) -> DiffOptions {
 		self.data.diff
+	}
+
+	pub const fn diff_syntax_highlight(&self) -> bool {
+		self.data.diff_syntax_highlight
+	}
+
+	pub const fn diff_syntax_max_file_bytes(&self) -> u64 {
+		self.data.diff_syntax_max_file_bytes
+	}
+
+	pub const fn diff_syntax_max_file_lines(&self) -> usize {
+		self.data.diff_syntax_max_file_lines
 	}
 
 	pub const fn status_show_untracked(

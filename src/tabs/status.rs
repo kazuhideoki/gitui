@@ -12,6 +12,7 @@ use crate::{
 	queue::{Action, InternalEvent, NeedsUpdate, Queue, ResetItem},
 	strings, try_or_popup,
 	ui::style::Theme,
+	AsyncNotification,
 };
 use anyhow::Result;
 use asyncgit::{
@@ -412,6 +413,7 @@ impl Status {
 		self.git_diff.is_pending()
 			|| self.git_status_stage.is_pending()
 			|| self.git_status_workdir.is_pending()
+			|| self.diff.any_work_pending()
 	}
 
 	fn check_remotes(&mut self) {
@@ -449,6 +451,10 @@ impl Status {
 		}
 
 		Ok(())
+	}
+
+	pub fn update_async(&mut self, ev: AsyncNotification) {
+		self.diff.update_async(ev);
 	}
 
 	pub fn get_files_changes(&self) -> Result<Vec<StatusItem>> {
@@ -503,7 +509,12 @@ impl Status {
 				if let Some((params, last)) = self.git_diff.last()? {
 					if params == diff_params {
 						// all params match, so we might need to update
-						self.diff.update(path, is_stage, last);
+						self.diff.update(
+							path,
+							is_stage,
+							last,
+							diff_params,
+						);
 					} else {
 						// params changed, we need to request the right diff
 						self.request_diff(
@@ -530,8 +541,10 @@ impl Status {
 		path: String,
 		is_stage: bool,
 	) -> Result<(), anyhow::Error> {
-		if let Some(diff) = self.git_diff.request(diff_params)? {
-			self.diff.update(path, is_stage, diff);
+		if let Some(diff) =
+			self.git_diff.request(diff_params.clone())?
+		{
+			self.diff.update(path, is_stage, diff, diff_params);
 		} else {
 			self.diff.clear(true);
 		}

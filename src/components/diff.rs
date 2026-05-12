@@ -12,13 +12,24 @@ use crate::{
 	string_utils::tabs_to_spaces,
 	string_utils::trim_offset,
 	strings, try_or_popup,
-	ui::style::SharedTheme,
+	ui::{
+		diff_syntax::{
+			highlighted_line_to_spans,
+			highlighted_spans_for_side_cell,
+			highlighted_spans_for_unified_line, AsyncDiffSyntaxJob,
+			HighlightStatus, HighlightedDiff, HighlightedDiffKey,
+		},
+		style::SharedTheme,
+	},
+	AsyncAppNotification, AsyncNotification,
+	DiffSyntaxHighlightProgress,
 };
 use anyhow::Result;
 use asyncgit::{
+	asyncjob::AsyncSingleJob,
 	hash,
 	sync::{self, diff::DiffLinePosition, RepoPathRef},
-	DiffLine, DiffLineType, FileDiff,
+	DiffLine, DiffLineType, DiffParams, FileDiff, ProgressPercent,
 };
 use bytesize::ByteSize;
 use crossterm::event::Event;
@@ -166,6 +177,10 @@ pub struct DiffComponent {
 	is_immutable: bool,
 	options: SharedOptions,
 	view_mode: DiffViewMode,
+	syntax_cache: Option<HighlightedDiff>,
+	syntax_job: AsyncSingleJob<AsyncDiffSyntaxJob>,
+	syntax_progress: Option<ProgressPercent>,
+	current_diff_params: Option<DiffParams>,
 }
 
 impl DiffComponent {
@@ -189,6 +204,10 @@ impl DiffComponent {
 			repo: env.repo.clone(),
 			options: env.options.clone(),
 			view_mode: DiffViewMode::Unified,
+			syntax_cache: None,
+			syntax_job: AsyncSingleJob::new(env.sender_app.clone()),
+			syntax_progress: None,
+			current_diff_params: None,
 		}
 	}
 	///
@@ -213,6 +232,10 @@ impl DiffComponent {
 		self.selection = Selection::Single(0);
 		self.selected_hunk = None;
 		self.pending = pending;
+		self.syntax_cache = None;
+		self.syntax_progress = None;
+		self.current_diff_params = None;
+		self.syntax_job.cancel();
 	}
 	///
 	pub fn update(
@@ -220,12 +243,18 @@ impl DiffComponent {
 		path: String,
 		is_stage: bool,
 		diff: FileDiff,
+		diff_params: DiffParams,
 	) {
 		self.pending = false;
 
 		let hash = hash(&diff);
+		let highlight_key =
+			self.highlight_key(path.clone(), hash, &diff_params);
 
-		if self.current.hash != hash {
+		if self.current.hash != hash
+			|| self.current.path != path
+			|| self.current.is_stage != is_stage
+		{
 			let reset_selection = self.current.path != path;
 
 			self.current = Current {
@@ -267,6 +296,115 @@ impl DiffComponent {
 				self.update_selection(old_selection);
 			}
 		}
+
+		self.current_diff_params = Some(diff_params.clone());
+		let has_hunks = self
+			.diff
+			.as_ref()
+			.is_some_and(|diff| !diff.hunks.is_empty());
+		self.request_syntax_highlight(
+			highlight_key,
+			diff_params,
+			has_hunks,
+		);
+	}
+
+	pub fn update_async(&mut self, ev: AsyncNotification) {
+		if let AsyncNotification::App(
+			AsyncAppNotification::DiffSyntaxHighlighting(progress),
+		) = ev
+		{
+			match progress {
+				DiffSyntaxHighlightProgress::Progress => {
+					self.syntax_progress = self.syntax_job.progress();
+				}
+				DiffSyntaxHighlightProgress::Done => {
+					self.syntax_progress = None;
+					if let Some(job) = self.syntax_job.take_last() {
+						if let Some(highlighted) = job.result() {
+							if self
+								.current_highlight_key()
+								.is_some_and(|key| {
+									key == highlighted.key
+								}) {
+								self.syntax_cache = Some(highlighted);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	pub fn any_work_pending(&self) -> bool {
+		self.syntax_job.is_pending()
+	}
+
+	fn highlight_key(
+		&self,
+		path: String,
+		diff_hash: u64,
+		diff_params: &DiffParams,
+	) -> HighlightedDiffKey {
+		HighlightedDiffKey::new(
+			path,
+			diff_hash,
+			diff_params,
+			self.theme.get_syntax(),
+			2,
+		)
+	}
+
+	fn current_highlight_key(&self) -> Option<HighlightedDiffKey> {
+		let params = self.current_diff_params.as_ref()?;
+		Some(self.highlight_key(
+			self.current.path.clone(),
+			self.current.hash,
+			params,
+		))
+	}
+
+	fn syntax_cache_matches(&self, key: &HighlightedDiffKey) -> bool {
+		self.syntax_cache.as_ref().is_some_and(|cache| {
+			cache.key == *key
+				&& matches!(
+					cache.status,
+					HighlightStatus::Ready
+						| HighlightStatus::Loading
+						| HighlightStatus::Failed(_)
+						| HighlightStatus::Skipped(_)
+				)
+		})
+	}
+
+	fn request_syntax_highlight(
+		&mut self,
+		key: HighlightedDiffKey,
+		diff_params: DiffParams,
+		has_hunks: bool,
+	) {
+		if !self.options.borrow().diff_syntax_highlight()
+			|| !has_hunks
+			|| self.syntax_cache_matches(&key)
+		{
+			return;
+		}
+
+		self.syntax_progress = Some(ProgressPercent::empty());
+		self.syntax_cache = Some(HighlightedDiff {
+			key: key.clone(),
+			old: None,
+			new: None,
+			status: HighlightStatus::Loading,
+		});
+		let options = self.options.borrow();
+		self.syntax_job.spawn(AsyncDiffSyntaxJob::new(
+			key,
+			self.repo.borrow().clone(),
+			diff_params.diff_type,
+			options.diff_syntax_max_file_bytes(),
+			options.diff_syntax_max_file_lines(),
+		));
 	}
 
 	fn move_selection(&mut self, move_type: ScrollType) {
@@ -470,10 +608,19 @@ impl DiffComponent {
 
 	fn get_text(&self, width: u16, height: u16) -> Vec<Line<'_>> {
 		if let Some(diff) = &self.diff {
+			let highlighted = self
+				.syntax_cache
+				.as_ref()
+				.filter(|cache| cache.is_ready());
 			return if diff.hunks.is_empty() {
 				self.get_text_binary(diff)
 			} else if self.side_by_side_render_active() {
-				self.get_text_side_by_side(diff, width, height)
+				self.get_text_side_by_side(
+					diff,
+					width,
+					height,
+					highlighted,
+				)
 			} else {
 				let mut res: Vec<Line> = Vec::new();
 
@@ -515,6 +662,7 @@ impl DiffComponent {
 									&self.theme,
 									self.horizontal_scroll
 										.get_right(),
+									highlighted,
 								));
 								lines_added += 1;
 							}
@@ -660,6 +808,7 @@ impl DiffComponent {
 		diff: &'a FileDiff,
 		width: u16,
 		height: u16,
+		highlighted: Option<&'a HighlightedDiff>,
 	) -> Vec<Line<'a>> {
 		let display_lines = Self::build_side_by_side_lines(diff);
 		let min = self.vertical_scroll.get_top();
@@ -689,7 +838,12 @@ impl DiffComponent {
 						selected_hunk,
 					),
 				SideBySideDisplayLine::Row(row) => self
-					.get_side_by_side_row(row, cell_width, selected),
+					.get_side_by_side_row(
+						row,
+						cell_width,
+						selected,
+						highlighted,
+					),
 			});
 		}
 
@@ -731,31 +885,60 @@ impl DiffComponent {
 		row: &SideBySideLine<'a>,
 		cell_width: u16,
 		selected: bool,
+		highlighted: Option<&'a HighlightedDiff>,
 	) -> Line<'a> {
-		let left = self.get_side_cell_span(
-			row.left, cell_width, selected, false,
+		let mut spans = self.get_side_cell_spans(
+			row.left,
+			cell_width,
+			selected,
+			false,
+			true,
+			highlighted,
 		);
-		let right = self.get_side_cell_span(
-			row.right, cell_width, selected, true,
-		);
+		spans.push(Span::styled(
+			Cow::from(symbols::line::VERTICAL),
+			self.theme.diff_hunk_marker(selected),
+		));
+		spans.extend(self.get_side_cell_spans(
+			row.right,
+			cell_width,
+			selected,
+			true,
+			false,
+			highlighted,
+		));
 
-		Line::from(vec![
-			left,
-			Span::styled(
-				Cow::from(symbols::line::VERTICAL),
-				self.theme.diff_hunk_marker(selected),
-			),
-			right,
-		])
+		Line::from(spans)
 	}
 
-	fn get_side_cell_span<'a>(
+	fn get_side_cell_spans<'a>(
 		&self,
 		cell: Option<SideCell<'a>>,
 		width: u16,
 		selected: bool,
 		trailing_newline: bool,
-	) -> Span<'a> {
+		use_old_side: bool,
+		highlighted: Option<&'a HighlightedDiff>,
+	) -> Vec<Span<'a>> {
+		if let (Some(cell), Some(highlighted)) = (cell, highlighted) {
+			if let Some(line) = highlighted_spans_for_side_cell(
+				cell.line,
+				use_old_side,
+				highlighted,
+			) {
+				return highlighted_line_to_spans(
+					line,
+					cell.line.line_type,
+					selected,
+					&self.theme,
+					self.horizontal_scroll.get_right(),
+					usize::from(width),
+					true,
+					trailing_newline,
+				);
+			}
+		}
+
 		let content = cell.map_or_else(String::new, |cell| {
 			let content =
 				if !matches!(cell.line.line_type, DiffLineType::None)
@@ -779,10 +962,10 @@ impl DiffComponent {
 		let line_type = cell
 			.map_or(DiffLineType::None, |cell| cell.line.line_type);
 
-		Span::styled(
+		vec![Span::styled(
 			Cow::from(filled),
 			self.theme.diff_line(line_type, selected),
-		)
+		)]
 	}
 
 	fn side_by_side_copy_line(
@@ -849,6 +1032,7 @@ impl DiffComponent {
 		end_of_hunk: bool,
 		theme: &SharedTheme,
 		scrolled_right: usize,
+		highlighted: Option<&'a HighlightedDiff>,
 	) -> Line<'a> {
 		let style = theme.diff_hunk_marker(selected_hunk);
 
@@ -869,6 +1053,25 @@ impl DiffComponent {
 				),
 			}
 		};
+
+		if let Some(highlighted) = highlighted {
+			if let Some(highlighted_line) =
+				highlighted_spans_for_unified_line(line, highlighted)
+			{
+				let mut spans = vec![left_side_of_line];
+				spans.extend(highlighted_line_to_spans(
+					highlighted_line,
+					line.line_type,
+					selected,
+					theme,
+					scrolled_right,
+					width as usize,
+					selected,
+					true,
+				));
+				return Line::from(spans);
+			}
+		}
 
 		let content =
 			if !is_content_line && line.content.as_ref().is_empty() {
@@ -1179,14 +1382,15 @@ impl DrawableComponent for DiffComponent {
 		);
 
 		let title = format!(
-			"{}{}{}",
+			"{}{}{}{}",
 			strings::title_diff(&self.key_config),
 			if self.view_mode == DiffViewMode::SideBySide {
 				"[side-by-side] "
 			} else {
 				""
 			},
-			self.current.path
+			self.current.path,
+			self.syntax_title_suffix()
 		);
 
 		let txt = if self.pending {
@@ -1220,6 +1424,24 @@ impl DrawableComponent for DiffComponent {
 		}
 
 		Ok(())
+	}
+}
+
+impl DiffComponent {
+	fn syntax_title_suffix(&self) -> String {
+		if let Some(progress) = self.syntax_progress {
+			return format!(" [syntax: {}%]", progress.progress);
+		}
+
+		match self.syntax_cache.as_ref().map(|cache| &cache.status) {
+			Some(HighlightStatus::Skipped(reason)) => {
+				format!(" [syntax skipped: {reason:?}]")
+			}
+			Some(HighlightStatus::Failed(_)) => {
+				" [syntax failed]".to_string()
+			}
+			_ => String::new(),
+		}
 	}
 }
 
@@ -1486,7 +1708,8 @@ mod tests {
 					false,
 					false,
 					&default_theme,
-					0
+					0,
+					None
 				)
 				.spans
 				.last()
@@ -1517,7 +1740,8 @@ mod tests {
 
 			assert_eq!(
 				DiffComponent::get_line_to_add(
-					4, &diff_line, false, false, false, &theme, 0
+					4, &diff_line, false, false, false, &theme, 0,
+					None,
 				)
 				.spans
 				.last()

@@ -10,6 +10,7 @@ use crate::{
 	queue::{InternalEvent, NeedsUpdate, Queue, StackablePopupOpen},
 	strings,
 	ui::{draw_scrollbar, style::SharedTheme, Orientation},
+	AsyncNotification,
 };
 use anyhow::Result;
 use asyncgit::{
@@ -125,6 +126,11 @@ impl FileRevlogPopup {
 	pub fn any_work_pending(&self) -> bool {
 		self.git_diff.is_pending()
 			|| self.git_log.as_ref().is_some_and(AsyncLog::is_pending)
+			|| self.diff.any_work_pending()
+	}
+
+	pub fn update_async(&mut self, ev: AsyncNotification) {
+		self.diff.update_async(ev);
 	}
 
 	///
@@ -174,6 +180,7 @@ impl FileRevlogPopup {
 								open_request.file_path.clone(),
 								false,
 								last,
+								diff_params,
 							);
 
 							return Ok(());

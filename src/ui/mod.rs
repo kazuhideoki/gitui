@@ -1,3 +1,4 @@
+pub mod diff_syntax;
 mod reflow;
 mod scrollbar;
 mod scrolllist;

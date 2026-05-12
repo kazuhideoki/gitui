@@ -9,6 +9,18 @@ use struct_patch::Patch;
 
 pub type SharedTheme = Rc<Theme>;
 
+const fn default_color_reset() -> Color {
+	Color::Reset
+}
+
+const fn default_diff_line_add_bg() -> Color {
+	Color::Rgb(16, 48, 16)
+}
+
+const fn default_diff_line_delete_bg() -> Color {
+	Color::Rgb(48, 16, 16)
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Patch)]
 #[patch(attribute(derive(Serialize, Deserialize)))]
 pub struct Theme {
@@ -21,6 +33,12 @@ pub struct Theme {
 	disabled_fg: Color,
 	diff_line_add: Color,
 	diff_line_delete: Color,
+	#[serde(default = "default_diff_line_add_bg")]
+	diff_line_add_bg: Color,
+	#[serde(default = "default_diff_line_delete_bg")]
+	diff_line_delete_bg: Color,
+	#[serde(default = "default_color_reset")]
+	diff_line_context_bg: Color,
 	diff_file_added: Color,
 	diff_file_removed: Color,
 	diff_file_moved: Color,
@@ -145,7 +163,7 @@ impl Theme {
 		self.apply_select(style, selected)
 	}
 
-	const fn apply_select(
+	pub const fn apply_selection(
 		&self,
 		style: Style,
 		selected: bool,
@@ -159,6 +177,14 @@ impl Theme {
 		} else {
 			style
 		}
+	}
+
+	const fn apply_select(
+		&self,
+		style: Style,
+		selected: bool,
+	) -> Style {
+		self.apply_selection(style, selected)
 	}
 
 	pub fn option(&self, on: bool) -> Style {
@@ -182,7 +208,7 @@ impl Theme {
 		typ: DiffLineType,
 		selected: bool,
 	) -> Style {
-		let style = match typ {
+		let mut style = match typ {
 			DiffLineType::Add => {
 				Style::default().fg(self.diff_line_add)
 			}
@@ -199,7 +225,29 @@ impl Theme {
 			}),
 		};
 
+		if let Some(bg) = self.diff_line_background(typ) {
+			style = style.bg(bg);
+		}
+
 		self.apply_select(style, selected)
+	}
+
+	pub const fn diff_line_background(
+		&self,
+		typ: DiffLineType,
+	) -> Option<Color> {
+		let color = match typ {
+			DiffLineType::Add => self.diff_line_add_bg,
+			DiffLineType::Delete => self.diff_line_delete_bg,
+			DiffLineType::None => self.diff_line_context_bg,
+			DiffLineType::Header => Color::Reset,
+		};
+
+		if matches!(color, Color::Reset) {
+			None
+		} else {
+			Some(color)
+		}
 	}
 
 	pub fn text_danger(&self) -> Style {
@@ -339,6 +387,9 @@ impl Default for Theme {
 			disabled_fg: Color::DarkGray,
 			diff_line_add: Color::Green,
 			diff_line_delete: Color::Red,
+			diff_line_add_bg: default_diff_line_add_bg(),
+			diff_line_delete_bg: default_diff_line_delete_bg(),
+			diff_line_context_bg: Color::Reset,
 			diff_file_added: Color::LightGreen,
 			diff_file_removed: Color::LightRed,
 			diff_file_moved: Color::LightMagenta,
