@@ -1,7 +1,14 @@
 use super::{
+	diff_display::{
+		build_side_by_side_lines, side_by_side_copy_line,
+		side_by_side_hunk_range, side_by_side_selected_positions,
+		DiffViewMode, SideBySideDisplayLine, SideBySideLine,
+		SideCell, MIN_SIDE_BY_SIDE_WIDTH,
+	},
 	utils::scroll_horizontal::HorizontalScroll,
-	utils::scroll_vertical::VerticalScroll, CommandBlocking,
-	Direction, DrawableComponent, HorizontalScrollType, ScrollType,
+	utils::scroll_vertical::VerticalScroll,
+	CommandBlocking, Direction, DrawableComponent,
+	HorizontalScrollType, ScrollType,
 };
 use crate::{
 	app::Environment,
@@ -43,57 +50,11 @@ use ratatui::{
 };
 use std::{borrow::Cow, cell::Cell, cmp, path::Path};
 
-const MIN_SIDE_BY_SIDE_WIDTH: u16 = 100;
-
 #[derive(Default)]
 struct Current {
 	path: String,
 	is_stage: bool,
 	hash: u64,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DiffViewMode {
-	Unified,
-	SideBySide,
-}
-
-#[derive(Clone, Copy)]
-struct SideCell<'a> {
-	line: &'a DiffLine,
-	raw_index: usize,
-}
-
-struct SideBySideLine<'a> {
-	left: Option<SideCell<'a>>,
-	right: Option<SideCell<'a>>,
-	raw_indices: Vec<usize>,
-	hunk_index: Option<usize>,
-}
-
-enum SideBySideDisplayLine<'a> {
-	Header {
-		line: &'a DiffLine,
-		raw_index: usize,
-		hunk_index: usize,
-	},
-	Row(SideBySideLine<'a>),
-}
-
-impl SideBySideDisplayLine<'_> {
-	const fn hunk_index(&self) -> Option<usize> {
-		match self {
-			Self::Header { hunk_index, .. } => Some(*hunk_index),
-			Self::Row(row) => row.hunk_index,
-		}
-	}
-
-	fn raw_diff_indices(&self) -> Vec<usize> {
-		match self {
-			Self::Header { raw_index, .. } => vec![*raw_index],
-			Self::Row(row) => row.raw_indices.clone(),
-		}
-	}
 }
 
 ///
@@ -461,7 +422,7 @@ impl DiffComponent {
 	fn lines_count(&self) -> usize {
 		self.diff.as_ref().map_or(0, |diff| {
 			if self.side_by_side_model_active() {
-				Self::build_side_by_side_lines(diff).len()
+				build_side_by_side_lines(diff).len()
 			} else {
 				diff.lines
 			}
@@ -529,14 +490,12 @@ impl DiffComponent {
 		if let Some(diff) = &self.diff {
 			if self.side_by_side_model_active() {
 				let lines_to_copy: Vec<String> =
-					Self::build_side_by_side_lines(diff)
+					build_side_by_side_lines(diff)
 						.into_iter()
 						.enumerate()
 						.filter_map(|(i, line)| {
 							if self.selection.contains(i) {
-								Some(Self::side_by_side_copy_line(
-									&line,
-								))
+								Some(side_by_side_copy_line(&line))
 							} else {
 								None
 							}
@@ -608,7 +567,7 @@ impl DiffComponent {
 		line_selected: usize,
 	) -> Option<usize> {
 		if self.side_by_side_model_active() {
-			Self::build_side_by_side_lines(diff)
+			build_side_by_side_lines(diff)
 				.get(line_selected)
 				.and_then(SideBySideDisplayLine::hunk_index)
 		} else {
@@ -691,128 +650,6 @@ impl DiffComponent {
 		vec![]
 	}
 
-	fn build_side_by_side_lines(
-		diff: &FileDiff,
-	) -> Vec<SideBySideDisplayLine<'_>> {
-		let mut output = Vec::new();
-		let mut raw_index = 0_usize;
-
-		for (hunk_index, hunk) in diff.hunks.iter().enumerate() {
-			let mut hunk_line_index = 0_usize;
-
-			while hunk_line_index < hunk.lines.len() {
-				let line = &hunk.lines[hunk_line_index];
-
-				if line.line_type == DiffLineType::Header {
-					output.push(SideBySideDisplayLine::Header {
-						line,
-						raw_index,
-						hunk_index,
-					});
-					hunk_line_index += 1;
-					raw_index += 1;
-					continue;
-				}
-
-				if line.line_type == DiffLineType::Delete {
-					let delete_start = hunk_line_index;
-					while hunk_line_index < hunk.lines.len()
-						&& hunk.lines[hunk_line_index].line_type
-							== DiffLineType::Delete
-					{
-						hunk_line_index += 1;
-					}
-
-					let add_start = hunk_line_index;
-					while hunk_line_index < hunk.lines.len()
-						&& hunk.lines[hunk_line_index].line_type
-							== DiffLineType::Add
-					{
-						hunk_line_index += 1;
-					}
-
-					let delete_count = add_start - delete_start;
-					let add_count = hunk_line_index - add_start;
-					let row_count = cmp::max(delete_count, add_count);
-
-					for row in 0..row_count {
-						let left = (row < delete_count).then(|| {
-							let index = delete_start + row;
-							SideCell {
-								line: &hunk.lines[index],
-								raw_index: raw_index
-									+ (index - delete_start),
-							}
-						});
-						let right = (row < add_count).then(|| {
-							let index = add_start + row;
-							SideCell {
-								line: &hunk.lines[index],
-								raw_index: raw_index
-									+ delete_count + row,
-							}
-						});
-						output.push(SideBySideDisplayLine::Row(
-							Self::side_by_side_row(
-								left,
-								right,
-								Some(hunk_index),
-							),
-						));
-					}
-
-					raw_index += delete_count + add_count;
-					continue;
-				}
-
-				let cell = SideCell { line, raw_index };
-				match line.line_type {
-					DiffLineType::Add => {
-						output.push(SideBySideDisplayLine::Row(
-							Self::side_by_side_row(
-								None,
-								Some(cell),
-								Some(hunk_index),
-							),
-						));
-					}
-					_ => {
-						output.push(SideBySideDisplayLine::Row(
-							Self::side_by_side_row(
-								Some(cell),
-								Some(cell),
-								Some(hunk_index),
-							),
-						));
-					}
-				}
-				hunk_line_index += 1;
-				raw_index += 1;
-			}
-		}
-
-		output
-	}
-
-	fn side_by_side_row<'a>(
-		left: Option<SideCell<'a>>,
-		right: Option<SideCell<'a>>,
-		hunk_index: Option<usize>,
-	) -> SideBySideLine<'a> {
-		let raw_indices = [left, right]
-			.into_iter()
-			.flatten()
-			.map(|cell| cell.raw_index)
-			.collect();
-
-		SideBySideLine {
-			left,
-			right,
-			raw_indices,
-			hunk_index,
-		}
-	}
-
 	fn get_text_side_by_side<'a>(
 		&self,
 		diff: &'a FileDiff,
@@ -820,7 +657,7 @@ impl DiffComponent {
 		height: u16,
 		highlighted: Option<&'a HighlightedDiff>,
 	) -> Vec<Line<'a>> {
-		let display_lines = Self::build_side_by_side_lines(diff);
+		let display_lines = build_side_by_side_lines(diff);
 		let min = self.vertical_scroll.get_top();
 		let max = min + height as usize;
 		let cell_width = self.side_cell_width();
@@ -976,30 +813,6 @@ impl DiffComponent {
 			Cow::from(filled),
 			self.theme.diff_line(line_type, selected),
 		)]
-	}
-
-	fn side_by_side_copy_line(
-		line: &SideBySideDisplayLine<'_>,
-	) -> String {
-		match line {
-			SideBySideDisplayLine::Header { line, .. } => line
-				.content
-				.trim_matches(|c| c == '\n' || c == '\r')
-				.to_string(),
-			SideBySideDisplayLine::Row(row) => {
-				let left = row.left.map_or("", |cell| {
-					cell.line
-						.content
-						.trim_matches(|c| c == '\n' || c == '\r')
-				});
-				let right = row.right.map_or("", |cell| {
-					cell.line
-						.content
-						.trim_matches(|c| c == '\n' || c == '\r')
-				});
-				format!("{left}\t{right}")
-			}
-		}
 	}
 
 	fn get_text_binary(&self, diff: &FileDiff) -> Vec<Line<'_>> {
@@ -1224,29 +1037,9 @@ impl DiffComponent {
 	fn selected_lines(&self) -> Vec<DiffLinePosition> {
 		self.diff.as_ref().map_or_else(Vec::new, |diff| {
 			if self.side_by_side_model_active() {
-				let raw_lines: Vec<&DiffLine> = diff
-					.hunks
-					.iter()
-					.flat_map(|hunk| hunk.lines.iter())
-					.collect();
-
-				return Self::build_side_by_side_lines(diff)
-					.into_iter()
-					.enumerate()
-					.filter(|(i, _)| self.selection.contains(*i))
-					.flat_map(|(_, line)| line.raw_diff_indices())
-					.filter_map(|raw_index| raw_lines.get(raw_index))
-					.filter_map(|line| {
-						if matches!(
-							line.line_type,
-							DiffLineType::Add | DiffLineType::Delete
-						) {
-							Some(line.position)
-						} else {
-							None
-						}
-					})
-					.collect();
+				return side_by_side_selected_positions(diff, |i| {
+					self.selection.contains(i)
+				});
 			}
 
 			diff.hunks
@@ -1335,20 +1128,7 @@ impl DiffComponent {
 		hunk_index: usize,
 	) -> Option<(usize, usize)> {
 		if self.side_by_side_model_active() {
-			let mut start = None;
-			let mut end = None;
-			for (display_index, line) in
-				Self::build_side_by_side_lines(diff)
-					.iter()
-					.enumerate()
-			{
-				if line.hunk_index() == Some(hunk_index) {
-					start.get_or_insert(display_index);
-					end = Some(display_index.saturating_add(1));
-				}
-			}
-
-			start.zip(end)
+			side_by_side_hunk_range(diff, hunk_index)
 		} else {
 			let start = diff
 				.hunks
@@ -1691,7 +1471,9 @@ impl Component for DiffComponent {
 mod tests {
 	use super::*;
 	use crate::{
-		app::Environment, queue::InternalEvent, ui::style::Theme,
+		app::Environment,
+		queue::{Action, InternalEvent},
+		ui::style::Theme,
 	};
 	use asyncgit::sync::diff::Hunk;
 	use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -1817,174 +1599,254 @@ mod tests {
 		}
 	}
 
-	fn assert_side_rows(
-		diff: &FileDiff,
-		expected: &[(Option<&str>, Option<&str>)],
-	) {
-		let display_lines =
-			DiffComponent::build_side_by_side_lines(diff);
-		assert_eq!(display_lines.len(), expected.len());
-
-		for (line, (expected_left, expected_right)) in
-			display_lines.iter().zip(expected)
-		{
-			let SideBySideDisplayLine::Row(row) = line else {
-				panic!("expected side-by-side row");
-			};
-
-			assert_eq!(
-				row.left.map(|cell| cell.line.content.as_ref()),
-				*expected_left
-			);
-			assert_eq!(
-				row.right.map(|cell| cell.line.content.as_ref()),
-				*expected_right
-			);
+	fn test_file_diff_hunks(hunks: Vec<Vec<DiffLine>>) -> FileDiff {
+		let lines = hunks.iter().map(Vec::len).sum();
+		FileDiff {
+			lines,
+			hunks: hunks
+				.into_iter()
+				.enumerate()
+				.map(|(i, lines)| Hunk {
+					header_hash: i as u64,
+					lines,
+				})
+				.collect(),
+			..Default::default()
 		}
 	}
 
-	#[test]
-	fn side_by_side_context_lines_render_on_both_sides() {
-		let diff = test_file_diff(vec![
-			test_diff_line(
-				"foo",
-				DiffLineType::None,
-				Some(1),
-				Some(1),
-			),
-			test_diff_line(
-				"bar",
-				DiffLineType::None,
-				Some(2),
-				Some(2),
-			),
-		]);
-
-		assert_side_rows(
-			&diff,
-			&[(Some("foo"), Some("foo")), (Some("bar"), Some("bar"))],
-		);
+	fn line_content(line: &Line<'_>) -> String {
+		line.spans
+			.iter()
+			.map(|span| span.content.as_ref())
+			.collect()
 	}
 
 	#[test]
-	fn side_by_side_add_only_renders_on_right() {
-		let diff = test_file_diff(vec![
-			test_diff_line("foo", DiffLineType::Add, None, Some(1)),
-			test_diff_line("bar", DiffLineType::Add, None, Some(2)),
-		]);
-
-		assert_side_rows(
-			&diff,
-			&[(None, Some("foo")), (None, Some("bar"))],
-		);
-	}
-
-	#[test]
-	fn side_by_side_delete_only_renders_on_left() {
-		let diff = test_file_diff(vec![
+	fn unified_text_renders_headers_changes_empty_lines_and_context()
+	{
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.diff = Some(test_file_diff(vec![
 			test_diff_line(
-				"foo",
-				DiffLineType::Delete,
-				Some(1),
-				None,
-			),
-			test_diff_line(
-				"bar",
-				DiffLineType::Delete,
-				Some(2),
-				None,
-			),
-		]);
-
-		assert_side_rows(
-			&diff,
-			&[(Some("foo"), None), (Some("bar"), None)],
-		);
-	}
-
-	#[test]
-	fn side_by_side_pairs_one_to_one_replacement() {
-		let diff = test_file_diff(vec![
-			test_diff_line(
-				"foo",
-				DiffLineType::Delete,
-				Some(1),
-				None,
-			),
-			test_diff_line("bar", DiffLineType::Add, None, Some(1)),
-		]);
-
-		assert_side_rows(&diff, &[(Some("foo"), Some("bar"))]);
-	}
-
-	#[test]
-	fn side_by_side_pairs_many_to_one_replacement() {
-		let diff = test_file_diff(vec![
-			test_diff_line(
-				"foo",
-				DiffLineType::Delete,
-				Some(1),
-				None,
-			),
-			test_diff_line(
-				"bar",
-				DiffLineType::Delete,
-				Some(2),
-				None,
-			),
-			test_diff_line("baz", DiffLineType::Add, None, Some(1)),
-		]);
-
-		assert_side_rows(
-			&diff,
-			&[(Some("foo"), Some("baz")), (Some("bar"), None)],
-		);
-	}
-
-	#[test]
-	fn side_by_side_pairs_one_to_many_replacement() {
-		let diff = test_file_diff(vec![
-			test_diff_line(
-				"foo",
-				DiffLineType::Delete,
-				Some(1),
-				None,
-			),
-			test_diff_line("bar", DiffLineType::Add, None, Some(1)),
-			test_diff_line("baz", DiffLineType::Add, None, Some(2)),
-		]);
-
-		assert_side_rows(
-			&diff,
-			&[(Some("foo"), Some("bar")), (None, Some("baz"))],
-		);
-	}
-
-	#[test]
-	fn side_by_side_keeps_hunk_headers_full_width() {
-		let diff = test_file_diff(vec![
-			test_diff_line(
-				"@@ -1,2 +1,2 @@",
+				"@@ -1,3 +1,3 @@",
 				DiffLineType::Header,
 				None,
 				None,
 			),
 			test_diff_line(
-				"foo",
+				"old",
 				DiffLineType::Delete,
 				Some(1),
 				None,
 			),
-			test_diff_line("bar", DiffLineType::Add, None, Some(1)),
-		]);
+			test_diff_line("", DiffLineType::Add, None, Some(1)),
+			test_diff_line(
+				"context",
+				DiffLineType::None,
+				Some(2),
+				Some(2),
+			),
+		]));
 
-		let display_lines =
-			DiffComponent::build_side_by_side_lines(&diff);
+		let lines = component
+			.get_text(40, 10)
+			.iter()
+			.map(line_content)
+			.collect::<Vec<_>>();
+
+		assert_eq!(lines.len(), 4);
+		assert!(lines[0].contains("@@ -1,3 +1,3 @@"));
+		assert!(lines[1].contains("old"));
+		assert!(lines[2].contains('¶'));
+		assert!(lines[3].contains("context"));
+	}
+
+	#[test]
+	fn side_by_side_text_renders_full_width_header_separator_and_cells(
+	) {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"@@ -1 +1 @@",
+				DiffLineType::Header,
+				None,
+				None,
+			),
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(1),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(1)),
+		]));
+
+		let lines = component
+			.get_text(MIN_SIDE_BY_SIDE_WIDTH, 10)
+			.iter()
+			.map(line_content)
+			.collect::<Vec<_>>();
+
+		assert_eq!(lines.len(), 2);
+		assert!(lines[0].contains("@@ -1 +1 @@"));
+		assert!(lines[1].contains("old"));
+		assert!(lines[1].contains(symbols::line::VERTICAL));
+		assert!(lines[1].contains("new"));
+	}
+
+	#[test]
+	fn side_by_side_narrow_fallback_renders_unified_lines_but_uses_side_selection_model(
+	) {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH - 1, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(3),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(4)),
+		]));
+		component.selection = Selection::Single(0);
+
+		let lines = component
+			.get_text(MIN_SIDE_BY_SIDE_WIDTH - 1, 10)
+			.iter()
+			.map(line_content)
+			.collect::<Vec<_>>();
+
+		assert_eq!(lines.len(), 2);
+		assert!(lines[0].contains("old"));
+		assert!(lines[1].contains("new"));
+		assert_eq!(
+			component.selected_lines(),
+			vec![
+				DiffLinePosition {
+					old_lineno: Some(3),
+					new_lineno: None,
+				},
+				DiffLinePosition {
+					old_lineno: None,
+					new_lineno: Some(4),
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn side_by_side_selection_skips_context_lines_for_line_actions() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current.path = "src/lib.rs".to_string();
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"context",
+				DiffLineType::None,
+				Some(2),
+				Some(2),
+			),
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(3),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(3)),
+		]));
+		component.selection = Selection::Multiple(0, 1);
+
+		assert_eq!(
+			component.selected_lines(),
+			vec![
+				DiffLinePosition {
+					old_lineno: Some(3),
+					new_lineno: None,
+				},
+				DiffLinePosition {
+					old_lineno: None,
+					new_lineno: Some(3),
+				},
+			]
+		);
+
+		component.reset_lines();
+
 		assert!(matches!(
-			display_lines.first(),
-			Some(SideBySideDisplayLine::Header { .. })
+			env.queue.pop(),
+			Some(InternalEvent::ConfirmAction(Action::ResetLines(
+				path,
+				lines
+			))) if path == "src/lib.rs" && lines == component.selected_lines()
 		));
-		assert_eq!(display_lines[1].raw_diff_indices(), vec![1, 2]);
+	}
+
+	#[test]
+	fn toggling_view_mode_preserves_selected_hunk() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.diff = Some(test_file_diff_hunks(vec![
+			vec![
+				test_diff_line(
+					"@@ -1 +1 @@",
+					DiffLineType::Header,
+					None,
+					None,
+				),
+				test_diff_line(
+					"old",
+					DiffLineType::Delete,
+					Some(1),
+					None,
+				),
+				test_diff_line(
+					"new",
+					DiffLineType::Add,
+					None,
+					Some(1),
+				),
+			],
+			vec![
+				test_diff_line(
+					"@@ -5 +5 @@",
+					DiffLineType::Header,
+					None,
+					None,
+				),
+				test_diff_line(
+					"next",
+					DiffLineType::Add,
+					None,
+					Some(5),
+				),
+			],
+		]));
+		component.selection = Selection::Single(3);
+		component.selected_hunk = Some(1);
+
+		component.toggle_view_mode();
+
+		assert!(matches!(
+			component.view_mode,
+			DiffViewMode::SideBySide
+		));
+		assert_eq!(component.selected_hunk, Some(1));
+		assert!(matches!(component.selection, Selection::Single(2)));
+
+		component.toggle_view_mode();
+
+		assert!(matches!(component.view_mode, DiffViewMode::Unified));
+		assert_eq!(component.selected_hunk, Some(1));
+		assert!(matches!(component.selection, Selection::Single(3)));
 	}
 
 	#[test]
