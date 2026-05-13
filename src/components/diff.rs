@@ -15,7 +15,10 @@ use crate::{
 	components::{CommandInfo, Component, EventState},
 	keys::{key_match, SharedKeyConfig},
 	options::SharedOptions,
-	queue::{Action, InternalEvent, NeedsUpdate, Queue, ResetItem},
+	queue::{
+		Action, ExternalEditorOpen, InternalEvent, NeedsUpdate,
+		Queue, ResetItem,
+	},
 	string_utils::tabs_to_spaces,
 	string_utils::trim_offset,
 	strings, try_or_popup,
@@ -182,7 +185,7 @@ impl DiffComponent {
 	}
 	///
 	const fn can_edit_file(&self) -> bool {
-		!self.is_immutable && !self.current.path.is_empty()
+		!self.current.path.is_empty()
 	}
 	///
 	pub fn clear(&mut self, pending: bool) {
@@ -1061,6 +1064,80 @@ impl DiffComponent {
 		})
 	}
 
+	fn selected_editor_line(&self) -> Option<u32> {
+		let diff = self.diff.as_ref()?;
+		let raw_lines = Self::raw_diff_lines(diff);
+		let selected = self.selection.get_end();
+
+		if self.side_by_side_model_active() {
+			let display_lines = build_side_by_side_lines(diff);
+			let display_line = display_lines.get(selected)?;
+			let raw_indices = display_line.raw_diff_indices();
+
+			return Self::editor_line_for_raw_indices(
+				&raw_lines,
+				&raw_indices,
+			)
+			.or_else(|| {
+				raw_indices.first().and_then(|raw_index| {
+					Self::editor_line_near_raw_index(
+						&raw_lines, *raw_index,
+					)
+				})
+			});
+		}
+
+		Self::editor_line_near_raw_index(&raw_lines, selected)
+	}
+
+	fn raw_diff_lines(diff: &FileDiff) -> Vec<&DiffLine> {
+		diff.hunks
+			.iter()
+			.flat_map(|hunk| hunk.lines.iter())
+			.collect()
+	}
+
+	fn editor_line_for_raw_indices(
+		raw_lines: &[&DiffLine],
+		raw_indices: &[usize],
+	) -> Option<u32> {
+		let mut old_lineno = None;
+
+		for raw_index in raw_indices {
+			let position = raw_lines.get(*raw_index)?.position;
+			if let Some(new_lineno) = position.new_lineno {
+				return Some(new_lineno);
+			}
+			old_lineno = old_lineno.or(position.old_lineno);
+		}
+
+		old_lineno
+	}
+
+	fn editor_line_near_raw_index(
+		raw_lines: &[&DiffLine],
+		raw_index: usize,
+	) -> Option<u32> {
+		Self::editor_line_for_raw_indices(raw_lines, &[raw_index])
+			.or_else(|| {
+				raw_lines
+					.iter()
+					.skip(raw_index.saturating_add(1))
+					.find_map(|line| Self::editor_line_for_line(line))
+			})
+			.or_else(|| {
+				raw_lines
+					.iter()
+					.take(raw_index)
+					.rev()
+					.find_map(|line| Self::editor_line_for_line(line))
+			})
+	}
+
+	fn editor_line_for_line(line: &DiffLine) -> Option<u32> {
+		line.position.new_lineno.or(line.position.old_lineno)
+	}
+
 	fn reset_untracked(&self) {
 		self.queue.push(InternalEvent::ConfirmAction(Action::Reset(
 			ResetItem {
@@ -1274,12 +1351,13 @@ impl Component for DiffComponent {
 			.hidden(),
 		);
 
+		out.push(CommandInfo::new(
+			strings::commands::edit_item(&self.key_config),
+			self.can_edit_file(),
+			self.focused() && self.can_edit_file(),
+		));
+
 		if !self.is_immutable {
-			out.push(CommandInfo::new(
-				strings::commands::edit_item(&self.key_config),
-				self.can_edit_file(),
-				self.focused() && self.can_edit_file(),
-			));
 			out.push(CommandInfo::new(
 				strings::commands::diff_hunk_remove(&self.key_config),
 				self.selected_hunk.is_some(),
@@ -1397,7 +1475,10 @@ impl Component for DiffComponent {
 				{
 					self.queue.push(
 						InternalEvent::OpenExternalEditor(Some(
-							self.current.path.clone(),
+							ExternalEditorOpen::new(
+								self.current.path.clone(),
+							)
+							.with_line(self.selected_editor_line()),
 						)),
 					);
 					Ok(EventState::Consumed)
@@ -1568,7 +1649,90 @@ mod tests {
 		assert!(matches!(
 			event,
 			Some(InternalEvent::OpenExternalEditor(Some(path)))
-				if path == "src/main.rs"
+				if path.path == "src/main.rs" && path.line.is_none()
+		));
+	}
+
+	#[test]
+	fn diff_component_opens_editor_at_selected_new_line() {
+		let env = Environment::test_env();
+		let mut diff = DiffComponent::new(&env, false);
+
+		diff.focus(true);
+		diff.current.path = String::from("src/main.rs");
+		diff.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"@@ -10,2 +10,2 @@",
+				DiffLineType::Header,
+				None,
+				None,
+			),
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(10),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(10)),
+		]));
+		diff.selection = Selection::Single(2);
+
+		let event = Event::Key(KeyEvent::new(
+			KeyCode::Char('e'),
+			KeyModifiers::empty(),
+		));
+
+		assert!(matches!(
+			diff.event(&event).unwrap(),
+			EventState::Consumed
+		));
+
+		let event = env.queue.pop();
+		assert!(matches!(
+			event,
+			Some(InternalEvent::OpenExternalEditor(Some(path)))
+				if path.path == "src/main.rs" && path.line == Some(10)
+		));
+	}
+
+	#[test]
+	fn diff_component_opens_editor_at_nearest_line_from_header() {
+		let env = Environment::test_env();
+		let mut diff = DiffComponent::new(&env, false);
+
+		diff.focus(true);
+		diff.current.path = String::from("src/main.rs");
+		diff.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"@@ -20,2 +20,2 @@",
+				DiffLineType::Header,
+				None,
+				None,
+			),
+			test_diff_line(
+				"context",
+				DiffLineType::None,
+				Some(20),
+				Some(20),
+			),
+		]));
+		diff.selection = Selection::Single(0);
+
+		let event = Event::Key(KeyEvent::new(
+			KeyCode::Char('e'),
+			KeyModifiers::empty(),
+		));
+
+		assert!(matches!(
+			diff.event(&event).unwrap(),
+			EventState::Consumed
+		));
+
+		let event = env.queue.pop();
+		assert!(matches!(
+			event,
+			Some(InternalEvent::OpenExternalEditor(Some(path)))
+				if path.path == "src/main.rs" && path.line == Some(20)
 		));
 	}
 

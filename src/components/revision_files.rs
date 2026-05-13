@@ -7,7 +7,9 @@ use crate::{
 	app::Environment,
 	keys::{key_match, SharedKeyConfig},
 	popups::{BlameFileOpen, FileRevOpen},
-	queue::{InternalEvent, Queue, StackablePopupOpen},
+	queue::{
+		ExternalEditorOpen, InternalEvent, Queue, StackablePopupOpen,
+	},
 	strings::{self, order, symbol},
 	try_or_popup,
 	ui::{self, common_nav, style::SharedTheme},
@@ -524,7 +526,9 @@ impl Component for RevisionFilesComponent {
 					// not altering a file inside a revision here
 					self.queue.push(InternalEvent::TabSwitchStatus);
 					self.queue.push(
-						InternalEvent::OpenExternalEditor(Some(file)),
+						InternalEvent::OpenExternalEditor(Some(
+							ExternalEditorOpen::new(file),
+						)),
 					);
 					return Ok(EventState::Consumed);
 				}

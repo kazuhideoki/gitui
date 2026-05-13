@@ -23,8 +23,8 @@ use crate::{
 		TagListPopup, UpdateRemoteUrlPopup,
 	},
 	queue::{
-		Action, AppTabs, InternalEvent, NeedsUpdate, Queue,
-		StackablePopupOpen,
+		Action, AppTabs, ExternalEditorOpen, InternalEvent,
+		NeedsUpdate, Queue, StackablePopupOpen,
 	},
 	setup_popups,
 	strings::{self, ellipsis_trim_start, order},
@@ -122,7 +122,7 @@ pub struct App {
 
 	// "Flags"
 	requires_redraw: Cell<bool>,
-	file_to_open: Option<String>,
+	file_to_open: Option<ExternalEditorOpen>,
 }
 
 pub struct Environment {
@@ -393,7 +393,8 @@ impl App {
 					if let Some(path) = self.file_to_open.take() {
 						ExternalEditorPopup::open_file_in_editor(
 							&self.repo.borrow(),
-							Path::new(&path),
+							Path::new(&path.path),
+							path.line,
 						)
 					} else {
 						let changes =

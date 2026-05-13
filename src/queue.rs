@@ -83,6 +83,28 @@ pub enum AppTabs {
 }
 
 ///
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalEditorOpen {
+	///
+	pub path: String,
+	///
+	pub line: Option<u32>,
+}
+
+impl ExternalEditorOpen {
+	///
+	pub const fn new(path: String) -> Self {
+		Self { path, line: None }
+	}
+
+	///
+	pub const fn with_line(mut self, line: Option<u32>) -> Self {
+		self.line = line;
+		self
+	}
+}
+
+///
 pub enum InternalEvent {
 	///
 	ConfirmAction(Action),
@@ -121,7 +143,7 @@ pub enum InternalEvent {
 	///
 	SelectBranch,
 	///
-	OpenExternalEditor(Option<String>),
+	OpenExternalEditor(Option<ExternalEditorOpen>),
 	///
 	Push(String, PushType, bool, bool),
 	///

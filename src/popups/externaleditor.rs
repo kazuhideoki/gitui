@@ -24,7 +24,7 @@ use ratatui::{
 	Frame,
 };
 use scopeguard::defer;
-use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::{env, io, path::Path, process::Command};
 
 ///
@@ -48,6 +48,7 @@ impl ExternalEditorPopup {
 	pub fn open_file_in_editor(
 		repo: &RepoPath,
 		path: &Path,
+		line: Option<u32>,
 	) -> Result<()> {
 		let work_dir = repo_work_dir(repo)?;
 
@@ -104,18 +105,58 @@ impl ExternalEditorPopup {
 		let remainder_str = echars.collect::<String>();
 		let remainder = remainder_str.split_whitespace();
 
-		let mut args: Vec<&OsStr> =
-			remainder.map(OsStr::new).collect();
+		let mut args: Vec<OsString> =
+			remainder.map(OsString::from).collect();
 
-		args.push(path.as_os_str());
+		Self::append_editor_target_args(
+			&command, &mut args, &path, line,
+		);
 
 		Command::new(command.clone())
 			.current_dir(work_dir)
-			.args(args)
+			.args(&args)
 			.status()
 			.map_err(|e| anyhow!("\"{command}\": {e}"))?;
 
 		Ok(())
+	}
+
+	fn append_editor_target_args(
+		command: &str,
+		args: &mut Vec<OsString>,
+		path: &Path,
+		line: Option<u32>,
+	) {
+		let Some(line) = line else {
+			args.push(path.as_os_str().to_os_string());
+			return;
+		};
+
+		let command_name = Path::new(command)
+			.file_name()
+			.and_then(|name| name.to_str())
+			.unwrap_or(command)
+			.to_ascii_lowercase();
+
+		match command_name.as_str() {
+			"code" | "code-insiders" | "codium" | "cursor" => {
+				args.push(OsString::from("-g"));
+				args.push(OsString::from(format!(
+					"{}:{line}",
+					path.display()
+				)));
+			}
+			"subl" | "sublime_text" | "zed" | "hx" | "helix" => {
+				args.push(OsString::from(format!(
+					"{}:{line}",
+					path.display()
+				)));
+			}
+			_ => {
+				args.push(OsString::from(format!("+{line}")));
+				args.push(path.as_os_str().to_os_string());
+			}
+		}
 	}
 }
 
