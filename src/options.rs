@@ -215,3 +215,31 @@ impl Options {
 		Ok(dir)
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn options_data_reads_old_files_without_diff_syntax_settings() {
+		let data: OptionsData = from_bytes(
+			br#"
+(
+	tab: 1,
+	diff: (
+		ignore_whitespace: false,
+		context: 3,
+		interhunk_lines: 0,
+	),
+	status_show_untracked: None,
+	commit_msgs: [],
+)
+"#,
+		)
+		.unwrap();
+
+		assert!(data.diff_syntax_highlight);
+		assert_eq!(data.diff_syntax_max_file_bytes, 524_288);
+		assert_eq!(data.diff_syntax_max_file_lines, 10_000);
+	}
+}

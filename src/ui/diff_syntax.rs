@@ -659,3 +659,160 @@ pub fn highlighted_line_to_spans<'a>(
 
 	out
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use asyncgit::sync::diff::DiffLinePosition;
+
+	fn highlighted_line(content: &str) -> HighlightedLine {
+		HighlightedLine {
+			spans: vec![HighlightedSpan {
+				content: content.to_string(),
+				style: Style::default(),
+			}],
+		}
+	}
+
+	fn highlighted_file(
+		path: &str,
+		lines: &[&str],
+	) -> HighlightedFile {
+		HighlightedFile {
+			path: path.to_string(),
+			line_count: lines.len(),
+			lines: lines
+				.iter()
+				.map(|line| highlighted_line(line))
+				.collect(),
+		}
+	}
+
+	fn highlighted_diff() -> HighlightedDiff {
+		HighlightedDiff {
+			key: HighlightedDiffKey {
+				path: "src/lib.rs".to_string(),
+				diff_hash: 1,
+				diff_params_hash: 2,
+				syntax_theme: "theme".to_string(),
+				tab_width: 2,
+			},
+			old: Some(highlighted_file(
+				"src/lib.rs",
+				&["old first", "old context"],
+			)),
+			new: Some(highlighted_file(
+				"src/lib.rs",
+				&["new first", "new context"],
+			)),
+			status: HighlightStatus::Ready,
+		}
+	}
+
+	fn diff_line(
+		line_type: DiffLineType,
+		old_lineno: Option<u32>,
+		new_lineno: Option<u32>,
+	) -> DiffLine {
+		DiffLine {
+			content: String::new().into(),
+			line_type,
+			position: DiffLinePosition {
+				old_lineno,
+				new_lineno,
+			},
+		}
+	}
+
+	fn line_text(line: &HighlightedLine) -> String {
+		spans_to_line_content(&line.spans)
+	}
+
+	#[test]
+	fn unified_highlight_mapping_uses_delete_old_add_new_and_context_new(
+	) {
+		let highlighted = highlighted_diff();
+
+		assert_eq!(
+			highlighted_spans_for_unified_line(
+				&diff_line(DiffLineType::Delete, Some(1), None),
+				&highlighted,
+			)
+			.map(line_text),
+			Some("old first".to_string())
+		);
+		assert_eq!(
+			highlighted_spans_for_unified_line(
+				&diff_line(DiffLineType::Add, None, Some(1)),
+				&highlighted,
+			)
+			.map(line_text),
+			Some("new first".to_string())
+		);
+		assert_eq!(
+			highlighted_spans_for_unified_line(
+				&diff_line(DiffLineType::None, Some(2), Some(2)),
+				&highlighted,
+			)
+			.map(line_text),
+			Some("new context".to_string())
+		);
+		assert!(highlighted_spans_for_unified_line(
+			&diff_line(DiffLineType::Header, None, None),
+			&highlighted,
+		)
+		.is_none());
+	}
+
+	#[test]
+	fn side_cell_highlight_mapping_uses_requested_side() {
+		let highlighted = highlighted_diff();
+		let line = diff_line(DiffLineType::None, Some(2), Some(2));
+
+		assert_eq!(
+			highlighted_spans_for_side_cell(
+				&line,
+				true,
+				&highlighted
+			)
+			.map(line_text),
+			Some("old context".to_string())
+		);
+		assert_eq!(
+			highlighted_spans_for_side_cell(
+				&line,
+				false,
+				&highlighted
+			)
+			.map(line_text),
+			Some("new context".to_string())
+		);
+	}
+
+	#[test]
+	fn trim_highlighted_spans_preserves_styles_after_horizontal_scroll(
+	) {
+		let red = Style::default().fg(Color::Red);
+		let green = Style::default().fg(Color::Green);
+		let spans = vec![
+			HighlightedSpan {
+				content: "abc".to_string(),
+				style: red,
+			},
+			HighlightedSpan {
+				content: "def".to_string(),
+				style: green,
+			},
+		];
+
+		let trimmed = trim_highlighted_spans(&spans, 4);
+
+		assert_eq!(
+			trimmed,
+			vec![HighlightedSpan {
+				content: "ef".to_string(),
+				style: green,
+			}]
+		);
+	}
+}
