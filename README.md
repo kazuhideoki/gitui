@@ -21,6 +21,25 @@
 
 <h5 align="center">GitUI provides you with the comfort of a git GUI but right in your terminal</h1>
 
+## Fork Branch Additions
+
+The `main` branch in this fork carries focused diff-view improvements on top of upstream `master`:
+
+- Side-by-side diff view, toggleable from the diff panel
+- Syntax highlighting for file diffs, with cached asynchronous highlighting for large diffs
+- Diff navigation and display refinements such as hunk jumps and adjustable context/interhunk settings
+
+## Local Install From This Fork
+
+To install this checkout locally and run the forked build:
+
+```sh
+make install
+gitui
+```
+
+`make install` installs the current checkout with `cargo install --path "." --offline --locked`.
+
 ![](demo.gif)
 
 ## <a name="table-of-contents"></a> Table of Contents

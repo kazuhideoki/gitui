@@ -15,3 +15,7 @@ cargo test
 - Use merge instead of rebase only when preserving already-shared branch history is more important than linear history.
 - If `main` has been rebased and must be pushed to a shared remote, use `git push --force-with-lease`, not plain force push.
 - Keep feature/topic branches such as side-by-side diff, syntax highlighting, and diff cache changes available when practical; they make conflict resolution and regression isolation easier.
+
+## Documentation
+
+- Document fork-specific feature additions and behavior changes near the top of `README.md`.
