@@ -757,6 +757,32 @@ pub mod commands {
 			CMD_GROUP_DIFF,
 		)
 	}
+	pub fn diff_context_increase(
+		key_config: &SharedKeyConfig,
+	) -> CommandText {
+		CommandText::new(
+			format!(
+				"More context [{}]",
+				key_config
+					.get_hint(key_config.keys.diff_context_increase),
+			),
+			"increase diff context lines",
+			CMD_GROUP_DIFF,
+		)
+	}
+	pub fn diff_context_decrease(
+		key_config: &SharedKeyConfig,
+	) -> CommandText {
+		CommandText::new(
+			format!(
+				"Less context [{}]",
+				key_config
+					.get_hint(key_config.keys.diff_context_decrease),
+			),
+			"decrease diff context lines",
+			CMD_GROUP_DIFF,
+		)
+	}
 	pub fn diff_home_end(
 		key_config: &SharedKeyConfig,
 	) -> CommandText {
