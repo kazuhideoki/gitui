@@ -10,7 +10,10 @@ use crate::{
 	components::{CommandInfo, Component, EventState},
 	keys::{key_match, SharedKeyConfig},
 	popups::{BlameFileOpen, FileRevOpen},
-	queue::{InternalEvent, NeedsUpdate, Queue, StackablePopupOpen},
+	queue::{
+		ExternalEditorOpen, InternalEvent, NeedsUpdate, Queue,
+		StackablePopupOpen,
+	},
 	strings::{self, order},
 	ui::{self, style::SharedTheme},
 };
@@ -510,7 +513,9 @@ impl Component for StatusTreeComponent {
 					if let Some(status_item) = self.selection_file() {
 						self.queue.push(
 							InternalEvent::OpenExternalEditor(Some(
-								status_item.path,
+								ExternalEditorOpen::new(
+									status_item.path,
+								),
 							)),
 						);
 					}
