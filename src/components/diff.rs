@@ -489,6 +489,13 @@ impl DiffComponent {
 		}
 	}
 
+	fn change_context_lines(&self, increase: bool) {
+		self.options.borrow_mut().diff_context_change(increase);
+		self.queue.push(InternalEvent::Update(
+			NeedsUpdate::DIFF | NeedsUpdate::COMMANDS,
+		));
+	}
+
 	fn copy_selection(&self) {
 		if let Some(diff) = &self.diff {
 			if self.side_by_side_model_active() {
@@ -1342,6 +1349,25 @@ impl Component for DiffComponent {
 				.is_some_and(|diff| !diff.hunks.is_empty()),
 			self.focused(),
 		));
+		out.push(CommandInfo::new(
+			strings::commands::diff_context_increase(
+				&self.key_config,
+			),
+			self.diff
+				.as_ref()
+				.is_some_and(|diff| !diff.hunks.is_empty()),
+			self.focused(),
+		));
+		out.push(CommandInfo::new(
+			strings::commands::diff_context_decrease(
+				&self.key_config,
+			),
+			self.diff
+				.as_ref()
+				.is_some_and(|diff| !diff.hunks.is_empty())
+				&& self.options.borrow().diff_options().context > 0,
+			self.focused(),
+		));
 		out.push(
 			CommandInfo::new(
 				strings::commands::diff_home_end(&self.key_config),
@@ -1469,6 +1495,18 @@ impl Component for DiffComponent {
 					self.key_config.keys.diff_toggle_view_mode,
 				) {
 					self.toggle_view_mode();
+					Ok(EventState::Consumed)
+				} else if key_match(
+					e,
+					self.key_config.keys.diff_context_increase,
+				) {
+					self.change_context_lines(true);
+					Ok(EventState::Consumed)
+				} else if key_match(
+					e,
+					self.key_config.keys.diff_context_decrease,
+				) {
+					self.change_context_lines(false);
 					Ok(EventState::Consumed)
 				} else if key_match(e, self.key_config.keys.edit_file)
 					&& self.can_edit_file()
@@ -2075,5 +2113,50 @@ mod tests {
 				},
 			]
 		);
+	}
+
+	#[test]
+	fn diff_context_keys_update_options_and_queue_diff_refresh() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.focus(true);
+		component.diff = Some(test_file_diff(vec![test_diff_line(
+			"@@ -1 +1 @@",
+			DiffLineType::Header,
+			None,
+			None,
+		)]));
+
+		let increase = Event::Key(KeyEvent::new(
+			KeyCode::Char('+'),
+			KeyModifiers::empty(),
+		));
+		assert!(matches!(
+			component.event(&increase).unwrap(),
+			EventState::Consumed
+		));
+		assert_eq!(env.options.borrow().diff_options().context, 2);
+		assert!(matches!(
+			env.queue.pop(),
+			Some(InternalEvent::Update(update))
+				if update.contains(NeedsUpdate::DIFF)
+					&& update.contains(NeedsUpdate::COMMANDS)
+		));
+
+		let decrease = Event::Key(KeyEvent::new(
+			KeyCode::Char('-'),
+			KeyModifiers::empty(),
+		));
+		assert!(matches!(
+			component.event(&decrease).unwrap(),
+			EventState::Consumed
+		));
+		assert_eq!(env.options.borrow().diff_options().context, 1);
+		assert!(matches!(
+			env.queue.pop(),
+			Some(InternalEvent::Update(update))
+				if update.contains(NeedsUpdate::DIFF)
+					&& update.contains(NeedsUpdate::COMMANDS)
+		));
 	}
 }
