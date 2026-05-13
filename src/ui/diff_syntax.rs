@@ -3,6 +3,7 @@ use crate::{
 	ui::{style::SharedTheme, SyntaxText},
 	AsyncAppNotification, DiffSyntaxHighlightProgress,
 };
+use anyhow::Result;
 use asyncgit::{
 	asyncjob::{AsyncJob, RunParams},
 	hash,
@@ -13,23 +14,36 @@ use asyncgit::{
 			diff_head_file_content, diff_index_file_content,
 			diff_worktree_file_content, FileContent,
 		},
+		utils::repo_dir,
 		RepoPath,
 	},
 	DiffLine, DiffLineType, DiffParams, DiffType, Error,
 	ProgressPercent,
 };
+use once_cell::sync::Lazy;
 use ratatui::{
 	style::{Color, Style},
 	text::Span,
 };
+use ron::{
+	de::from_bytes,
+	ser::{to_string_pretty, PrettyConfig},
+};
+use serde::{Deserialize, Serialize};
 use std::{
 	borrow::Cow,
+	collections::VecDeque,
+	fs::File,
+	io::{Read, Write},
 	path::Path,
+	path::PathBuf,
 	sync::{Arc, Mutex},
 };
 use unicode_width::UnicodeWidthStr;
 
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+#[derive(
+	Clone, Hash, PartialEq, Eq, Debug, Serialize, Deserialize,
+)]
 pub struct HighlightedDiffKey {
 	pub path: String,
 	pub diff_hash: u64,
@@ -56,7 +70,7 @@ impl HighlightedDiffKey {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HighlightSkipReason {
 	Binary,
 	TooLarge { bytes: u64, max_bytes: u64 },
@@ -64,7 +78,7 @@ pub enum HighlightSkipReason {
 	MissingContent,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HighlightStatus {
 	Loading,
 	Ready,
@@ -72,25 +86,25 @@ pub enum HighlightStatus {
 	Skipped(HighlightSkipReason),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HighlightedSpan {
 	pub content: String,
 	pub style: Style,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HighlightedLine {
 	pub spans: Vec<HighlightedSpan>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HighlightedFile {
 	pub path: String,
 	pub line_count: usize,
 	pub lines: Vec<HighlightedLine>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HighlightedDiff {
 	pub key: HighlightedDiffKey,
 	pub old: Option<HighlightedFile>,
@@ -98,10 +112,139 @@ pub struct HighlightedDiff {
 	pub status: HighlightStatus,
 }
 
+const HIGHLIGHTED_DIFF_CACHE_CAPACITY: usize = 16;
+const HIGHLIGHTED_DIFF_CACHE_VERSION: u32 = 1;
+const HIGHLIGHTED_DIFF_CACHE_FILENAME: &str =
+	"gitui_diff_syntax_cache.ron";
+static HIGHLIGHTED_DIFF_CACHE: Lazy<
+	Mutex<VecDeque<HighlightedDiff>>,
+> = Lazy::new(|| Mutex::new(VecDeque::new()));
+static HIGHLIGHTED_DIFF_CACHE_PATH: Lazy<Mutex<Option<PathBuf>>> =
+	Lazy::new(|| Mutex::new(None));
+
+#[derive(Serialize, Deserialize)]
+struct HighlightedDiffCacheFile {
+	version: u32,
+	entries: Vec<HighlightedDiff>,
+}
+
 impl HighlightedDiff {
 	pub const fn is_ready(&self) -> bool {
 		matches!(self.status, HighlightStatus::Ready)
 	}
+}
+
+pub fn cached_highlighted_diff(
+	key: &HighlightedDiffKey,
+) -> Option<HighlightedDiff> {
+	let mut cache = HIGHLIGHTED_DIFF_CACHE.lock().ok()?;
+	let index = cache.iter().position(|diff| diff.key == *key)?;
+	let diff = cache.remove(index)?;
+	cache.push_front(diff.clone());
+	Some(diff)
+}
+
+pub fn init_highlighted_diff_cache(repo: &RepoPath) -> Result<()> {
+	let cache_path =
+		repo_dir(repo)?.join(HIGHLIGHTED_DIFF_CACHE_FILENAME);
+
+	if let Ok(mut path) = HIGHLIGHTED_DIFF_CACHE_PATH.lock() {
+		*path = Some(cache_path.clone());
+	}
+	if let Ok(mut cache) = HIGHLIGHTED_DIFF_CACHE.lock() {
+		cache.clear();
+	}
+
+	let mut file = match File::open(cache_path) {
+		Ok(file) => file,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+			return Ok(());
+		}
+		Err(e) => return Err(e.into()),
+	};
+	let mut buffer = Vec::new();
+	file.read_to_end(&mut buffer)?;
+	let cache_file: HighlightedDiffCacheFile = from_bytes(&buffer)?;
+	if cache_file.version != HIGHLIGHTED_DIFF_CACHE_VERSION {
+		return Ok(());
+	}
+
+	if let Ok(mut cache) = HIGHLIGHTED_DIFF_CACHE.lock() {
+		*cache = cache_file
+			.entries
+			.into_iter()
+			.filter(|diff| {
+				!matches!(diff.status, HighlightStatus::Loading)
+			})
+			.take(HIGHLIGHTED_DIFF_CACHE_CAPACITY)
+			.collect();
+	}
+
+	Ok(())
+}
+
+pub fn cache_highlighted_diff(diff: HighlightedDiff) {
+	if matches!(diff.status, HighlightStatus::Loading) {
+		return;
+	}
+
+	let mut snapshot = None;
+	if let Ok(mut cache) = HIGHLIGHTED_DIFF_CACHE.lock() {
+		if let Some(index) =
+			cache.iter().position(|cached| cached.key == diff.key)
+		{
+			cache.remove(index);
+		}
+
+		cache.push_front(diff);
+		cache.truncate(HIGHLIGHTED_DIFF_CACHE_CAPACITY);
+		snapshot = Some(cache.iter().cloned().collect::<Vec<_>>());
+	}
+
+	let path = HIGHLIGHTED_DIFF_CACHE_PATH
+		.lock()
+		.ok()
+		.and_then(|path| path.clone());
+	if let (Some(path), Some(entries)) = (path, snapshot) {
+		rayon_core::spawn(move || {
+			if let Err(e) =
+				persist_highlighted_diff_cache(path, entries)
+			{
+				log::error!("diff syntax cache save error: {e}");
+			}
+		});
+	}
+}
+
+pub fn flush_highlighted_diff_cache() -> Result<()> {
+	let path = HIGHLIGHTED_DIFF_CACHE_PATH
+		.lock()
+		.ok()
+		.and_then(|path| path.clone());
+	let entries = HIGHLIGHTED_DIFF_CACHE
+		.lock()
+		.ok()
+		.map(|cache| cache.iter().cloned().collect::<Vec<_>>());
+
+	if let (Some(path), Some(entries)) = (path, entries) {
+		persist_highlighted_diff_cache(path, entries)?;
+	}
+
+	Ok(())
+}
+
+fn persist_highlighted_diff_cache(
+	path: PathBuf,
+	entries: Vec<HighlightedDiff>,
+) -> Result<()> {
+	let data = HighlightedDiffCacheFile {
+		version: HIGHLIGHTED_DIFF_CACHE_VERSION,
+		entries,
+	};
+	let data = to_string_pretty(&data, PrettyConfig::default())?;
+	let mut file = File::create(path)?;
+	file.write_all(data.as_bytes())?;
+	Ok(())
 }
 
 #[derive(Clone)]

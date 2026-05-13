@@ -30,7 +30,11 @@ use crate::{
 	strings::{self, ellipsis_trim_start, order},
 	tabs::{FilesTab, Revlog, StashList, Stashing, Status},
 	try_or_popup,
-	ui::style::{SharedTheme, Theme},
+	ui::{
+		init_highlighted_diff_cache,
+		style::{SharedTheme, Theme},
+		warm_up_syntax_highlighting,
+	},
 	AsyncAppNotification, AsyncNotification,
 };
 use anyhow::{bail, Result};
@@ -175,6 +179,20 @@ impl App {
 			sender_git,
 			sender_app,
 		};
+
+		if let Err(e) =
+			init_highlighted_diff_cache(&env.repo.borrow())
+		{
+			log::error!("diff syntax cache load failed: {e}");
+		}
+
+		let syntax_theme = env.theme.get_syntax();
+		rayon_core::spawn(move || {
+			if let Err(e) = warm_up_syntax_highlighting(&syntax_theme)
+			{
+				log::error!("syntax highlighting warmup failed: {e}");
+			}
+		});
 
 		let mut select_file: Option<PathBuf> = None;
 		let tab = if let Some(file) = cliargs.select_file {
