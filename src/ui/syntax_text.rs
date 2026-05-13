@@ -68,6 +68,45 @@ impl AsyncProgressBuffer {
 	}
 }
 
+fn syntax_theme(
+	syntax: &str,
+) -> Result<&'static Theme, asyncgit::Error> {
+	THEME.get_or_try_init(|| -> Result<Theme, asyncgit::Error> {
+		let theme_path = crate::args::get_app_config_path()
+			.map_err(|e| asyncgit::Error::Generic(e.to_string()))?
+			.join(format!("{syntax}.tmTheme"));
+
+		match ThemeSet::get_theme(&theme_path) {
+			Ok(t) => return Ok(t),
+			Err(e) => log::info!(
+				"could not load '{}': {e}, trying from the set of default themes",
+				theme_path.display()
+			),
+		}
+
+		let mut theme_set = ThemeSet::load_defaults();
+		if let Some(t) = theme_set.themes.remove(syntax) {
+			return Ok(t);
+		}
+
+		log::error!(
+			"the syntax theme '{syntax}' cannot be found. Using default theme ('{DEFAULT_SYNTAX_THEME}') instead"
+		);
+		Ok(theme_set
+			.themes
+			.remove(DEFAULT_SYNTAX_THEME)
+			.expect("the default theme should be there"))
+	})
+}
+
+pub fn warm_up_syntax_highlighting(
+	syntax: &str,
+) -> asyncgit::Result<()> {
+	Lazy::force(&SYNTAX_SET);
+	syntax_theme(syntax)?;
+	Ok(())
+}
+
 impl SyntaxText {
 	pub fn new(
 		text: String,
@@ -108,24 +147,7 @@ impl SyntaxText {
 			ParseState::new(syntax)
 		};
 
-		let theme = THEME.get_or_try_init(|| -> Result<Theme, asyncgit::Error> {
-			let theme_path = crate::args::get_app_config_path()
-				.map_err(|e| asyncgit::Error::Generic(e.to_string()))?.join(format!("{syntax}.tmTheme"));
-
-			match ThemeSet::get_theme(&theme_path) {
-				Ok(t) => return Ok(t),
-			    Err(e) => log::info!("could not load '{}': {e}, trying from the set of default themes", theme_path.display()),
-			}
-
-			let mut theme_set = ThemeSet::load_defaults();
-			if let Some(t) = theme_set.themes.remove(syntax) {
-			    return Ok(t);
-			}
-
-			log::error!("the syntax theme '{syntax}' cannot be found. Using default theme ('{DEFAULT_SYNTAX_THEME}') instead");
-			Ok(theme_set.themes.remove(DEFAULT_SYNTAX_THEME).expect("the default theme should be there"))
-		})?;
-
+		let theme = syntax_theme(syntax)?;
 		let highlighter = Highlighter::new(theme);
 		let mut syntax_lines: Vec<SyntaxLine> = Vec::new();
 

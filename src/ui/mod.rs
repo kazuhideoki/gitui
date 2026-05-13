@@ -6,6 +6,9 @@ mod stateful_paragraph;
 pub mod style;
 mod syntax_text;
 
+pub use diff_syntax::{
+	flush_highlighted_diff_cache, init_highlighted_diff_cache,
+};
 use filetreelist::MoveSelection;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 pub use scrollbar::{draw_scrollbar, Orientation};
@@ -13,7 +16,9 @@ pub use scrolllist::{draw_list, draw_list_block};
 pub use stateful_paragraph::{
 	ParagraphState, ScrollPos, StatefulParagraph,
 };
-pub use syntax_text::{AsyncSyntaxJob, SyntaxText};
+pub use syntax_text::{
+	warm_up_syntax_highlighting, AsyncSyntaxJob, SyntaxText,
+};
 
 use crate::keys::{key_match, SharedKeyConfig};
 

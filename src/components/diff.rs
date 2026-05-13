@@ -14,6 +14,7 @@ use crate::{
 	strings, try_or_popup,
 	ui::{
 		diff_syntax::{
+			cache_highlighted_diff, cached_highlighted_diff,
 			highlighted_line_to_spans,
 			highlighted_spans_for_side_cell,
 			highlighted_spans_for_unified_line, AsyncDiffSyntaxJob,
@@ -322,6 +323,9 @@ impl DiffComponent {
 					self.syntax_progress = None;
 					if let Some(job) = self.syntax_job.take_last() {
 						if let Some(highlighted) = job.result() {
+							cache_highlighted_diff(
+								highlighted.clone(),
+							);
 							if self
 								.current_highlight_key()
 								.is_some_and(|key| {
@@ -387,6 +391,12 @@ impl DiffComponent {
 			|| !has_hunks
 			|| self.syntax_cache_matches(&key)
 		{
+			return;
+		}
+
+		if let Some(highlighted) = cached_highlighted_diff(&key) {
+			self.syntax_progress = None;
+			self.syntax_cache = Some(highlighted);
 			return;
 		}
 

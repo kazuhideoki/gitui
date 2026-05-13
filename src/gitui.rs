@@ -16,7 +16,7 @@ use crate::{
 	keys::KeyConfig,
 	select_event,
 	spinner::Spinner,
-	ui::style::Theme,
+	ui::{flush_highlighted_diff_cache, style::Theme},
 	watcher::RepoWatcher,
 	AsyncAppNotification, AsyncNotification, QueueEvent, Updater,
 	SPINNER_INTERVAL, TICK_INTERVAL,
@@ -147,6 +147,10 @@ impl Gitui {
 					break;
 				}
 			}
+		}
+
+		if let Err(e) = flush_highlighted_diff_cache() {
+			log::error!("diff syntax cache flush failed: {e}");
 		}
 
 		Ok(self.app.quit_state())
