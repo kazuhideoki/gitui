@@ -19,13 +19,27 @@ use syntect::{
 	parsing::{ParseState, ScopeStack, SyntaxSet},
 };
 
-use crate::ui::diff_syntax::HighlightedSpan;
+use crate::ui::diff_syntax::{HighlightedLine, HighlightedSpan};
 use crate::{AsyncAppNotification, SyntaxHighlightProgress};
 
 pub const DEFAULT_SYNTAX_THEME: &str = "base16-eighties.dark";
 
 struct SyntaxLine {
 	items: Vec<(Style, usize, Range<usize>)>,
+}
+
+fn highlighted_spans_for_line(
+	syntax_line: &SyntaxLine,
+	line_content: &str,
+) -> Vec<HighlightedSpan> {
+	syntax_line
+		.items
+		.iter()
+		.map(|(style, _, range)| HighlightedSpan {
+			content: line_content[range.clone()].to_string(),
+			style: syntact_style_to_tui(style),
+		})
+		.collect()
 }
 
 pub struct SyntaxText {
@@ -211,6 +225,19 @@ impl SyntaxText {
 		self.lines.len()
 	}
 
+	pub fn highlighted_lines_owned(&self) -> Vec<HighlightedLine> {
+		self.lines
+			.iter()
+			.zip(self.text.lines())
+			.map(|(syntax_line, line_content)| HighlightedLine {
+				spans: highlighted_spans_for_line(
+					syntax_line,
+					line_content,
+				),
+			})
+			.collect()
+	}
+
 	pub fn line_spans_owned(
 		&self,
 		zero_based_line: usize,
@@ -218,16 +245,7 @@ impl SyntaxText {
 		let syntax_line = self.lines.get(zero_based_line)?;
 		let line_content = self.text.lines().nth(zero_based_line)?;
 
-		Some(
-			syntax_line
-				.items
-				.iter()
-				.map(|(style, _, range)| HighlightedSpan {
-					content: line_content[range.clone()].to_string(),
-					style: syntact_style_to_tui(style),
-				})
-				.collect(),
-		)
+		Some(highlighted_spans_for_line(syntax_line, line_content))
 	}
 }
 

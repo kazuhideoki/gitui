@@ -462,14 +462,8 @@ fn highlight_file(
 		),
 	)?;
 
-	let line_count = syntax.line_count();
-	let lines = (0..line_count)
-		.filter_map(|line| {
-			syntax
-				.line_spans_owned(line)
-				.map(|spans| HighlightedLine { spans })
-		})
-		.collect();
+	let lines = syntax.highlighted_lines_owned();
+	let line_count = lines.len();
 
 	Ok(HighlightedFile {
 		path: content.path,
