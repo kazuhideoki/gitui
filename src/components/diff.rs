@@ -27,8 +27,10 @@ use crate::{
 			cache_highlighted_diff, cached_highlighted_diff,
 			highlighted_line_to_spans,
 			highlighted_spans_for_side_cell,
-			highlighted_spans_for_unified_line, AsyncDiffSyntaxJob,
-			HighlightStatus, HighlightedDiff, HighlightedDiffKey,
+			highlighted_spans_for_unified_line,
+			merge_syntax_and_diff_style, trim_highlighted_spans,
+			AsyncDiffSyntaxJob, HighlightStatus, HighlightedDiff,
+			HighlightedDiffKey, HighlightedLine,
 		},
 		style::SharedTheme,
 	},
@@ -46,12 +48,15 @@ use bytesize::ByteSize;
 use crossterm::event::Event;
 use ratatui::{
 	layout::Rect,
+	style::Style,
 	symbols,
 	text::{Line, Span},
 	widgets::{Block, Borders, Paragraph},
 	Frame,
 };
 use std::{borrow::Cow, cell::Cell, cmp, path::Path};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Default)]
 struct Current {
@@ -694,13 +699,15 @@ impl DiffComponent {
 						selected,
 						selected_hunk,
 					),
-				SideBySideDisplayLine::Row(row) => self
-					.get_side_by_side_row(
+				SideBySideDisplayLine::Row(row) => {
+					res.extend(self.get_side_by_side_row(
 						row,
 						cell_width,
 						selected,
 						highlighted,
-					),
+					));
+					continue;
+				}
 			});
 		}
 
@@ -743,60 +750,89 @@ impl DiffComponent {
 		cell_width: u16,
 		selected: bool,
 		highlighted: Option<&'a HighlightedDiff>,
-	) -> Line<'a> {
-		let mut spans = self.get_side_cell_spans(
+	) -> Vec<Line<'a>> {
+		let (left_lines, left_line_type) = self.get_side_cell_lines(
 			row.left,
 			cell_width,
 			selected,
-			false,
 			true,
 			highlighted,
 		);
-		spans.push(Span::styled(
-			Cow::from(symbols::line::VERTICAL),
-			self.theme.diff_hunk_marker(selected),
-		));
-		spans.extend(self.get_side_cell_spans(
-			row.right,
-			cell_width,
-			selected,
-			true,
-			false,
-			highlighted,
-		));
+		let (right_lines, right_line_type) = self
+			.get_side_cell_lines(
+				row.right,
+				cell_width,
+				selected,
+				false,
+				highlighted,
+			);
+		let width = usize::from(cell_width);
+		let row_count =
+			cmp::max(left_lines.len(), right_lines.len()).max(1);
+		let mut lines = Vec::with_capacity(row_count);
 
-		Line::from(spans)
+		for visual_index in 0..row_count {
+			let mut spans = Self::side_cell_spans_at(
+				&left_lines,
+				visual_index,
+				width,
+				left_line_type,
+				selected,
+				&self.theme,
+			);
+			spans.push(Span::styled(
+				Cow::from(symbols::line::VERTICAL),
+				self.theme.diff_hunk_marker(selected),
+			));
+			spans.extend(Self::side_cell_spans_at(
+				&right_lines,
+				visual_index,
+				width,
+				right_line_type,
+				selected,
+				&self.theme,
+			));
+			spans.push(Span::styled(
+				Cow::from("\n"),
+				self.theme.diff_line(right_line_type, selected),
+			));
+			lines.push(Line::from(spans));
+		}
+
+		lines
 	}
 
-	fn get_side_cell_spans<'a>(
+	fn get_side_cell_lines<'a>(
 		&self,
 		cell: Option<SideCell<'a>>,
 		width: u16,
 		selected: bool,
-		trailing_newline: bool,
 		use_old_side: bool,
 		highlighted: Option<&'a HighlightedDiff>,
-	) -> Vec<Span<'a>> {
+	) -> (Vec<Vec<Span<'a>>>, DiffLineType) {
+		let line_type = cell
+			.map_or(DiffLineType::None, |cell| cell.line.line_type);
+
 		if let (Some(cell), Some(highlighted)) = (cell, highlighted) {
 			if let Some(line) = highlighted_spans_for_side_cell(
 				cell.line,
 				use_old_side,
 				highlighted,
 			) {
-				return highlighted_line_to_spans(
-					line,
-					cell.line.line_type,
-					selected,
-					&self.theme,
-					self.horizontal_scroll.get_right(),
-					usize::from(width),
-					true,
-					trailing_newline,
+				return (
+					self.highlighted_side_cell_lines(
+						line,
+						cell.line.line_type,
+						selected,
+						self.horizontal_scroll.get_right(),
+						usize::from(width),
+					),
+					line_type,
 				);
 			}
 		}
 
-		let content = cell.map_or_else(String::new, |cell| {
+		let fragments = cell.map_or_else(Vec::new, |cell| {
 			let content =
 				if !matches!(cell.line.line_type, DiffLineType::None)
 					&& cell.line.content.as_ref().is_empty()
@@ -807,22 +843,171 @@ impl DiffComponent {
 						cell.line.content.as_ref().to_string(),
 					)
 				};
-			trim_offset(&content, self.horizontal_scroll.get_right())
-				.to_string()
+			let content = trim_offset(
+				&content,
+				self.horizontal_scroll.get_right(),
+			)
+			.to_string();
+			vec![(content, self.theme.diff_line(line_type, selected))]
 		});
-		let width = usize::from(width);
-		let filled = if trailing_newline {
-			format!("{content:width$}\n")
-		} else {
-			format!("{content:width$}")
-		};
-		let line_type = cell
-			.map_or(DiffLineType::None, |cell| cell.line.line_type);
 
-		vec![Span::styled(
-			Cow::from(filled),
-			self.theme.diff_line(line_type, selected),
-		)]
+		(
+			Self::wrap_side_cell_fragments(
+				fragments,
+				usize::from(width),
+			),
+			line_type,
+		)
+	}
+
+	fn highlighted_side_cell_lines<'a>(
+		&self,
+		line: &HighlightedLine,
+		line_type: DiffLineType,
+		selected: bool,
+		scrolled_right: usize,
+		width: usize,
+	) -> Vec<Vec<Span<'a>>> {
+		let spans =
+			trim_highlighted_spans(&line.spans, scrolled_right);
+		let fragments = if spans.is_empty()
+			&& !matches!(line_type, DiffLineType::None)
+		{
+			vec![(
+				self.theme.line_break(),
+				self.theme.diff_line(line_type, selected),
+			)]
+		} else {
+			spans
+				.into_iter()
+				.map(|span| {
+					(
+						span.content,
+						merge_syntax_and_diff_style(
+							span.style,
+							line_type,
+							selected,
+							&self.theme,
+						),
+					)
+				})
+				.collect()
+		};
+
+		Self::wrap_side_cell_fragments(fragments, width)
+	}
+
+	fn wrap_side_cell_fragments<'a>(
+		fragments: Vec<(String, Style)>,
+		width: usize,
+	) -> Vec<Vec<Span<'a>>> {
+		if width == 0 {
+			return vec![Vec::new()];
+		}
+
+		let mut lines = Vec::new();
+		let mut current = Vec::new();
+		let mut current_width = 0_usize;
+		let mut buffer = String::new();
+		let mut buffer_style = None;
+
+		for (content, style) in fragments {
+			Self::push_buffered_side_span(
+				&mut current,
+				&mut buffer,
+				buffer_style.take(),
+			);
+			buffer_style = Some(style);
+
+			for grapheme in
+				UnicodeSegmentation::graphemes(content.as_str(), true)
+			{
+				let grapheme_width = grapheme.width();
+				if current_width > 0
+					&& current_width + grapheme_width > width
+				{
+					Self::push_buffered_side_span(
+						&mut current,
+						&mut buffer,
+						buffer_style.take(),
+					);
+					lines.push(current);
+					current = Vec::new();
+					current_width = 0;
+					buffer_style = Some(style);
+				}
+
+				buffer.push_str(grapheme);
+				current_width += grapheme_width;
+			}
+		}
+
+		Self::push_buffered_side_span(
+			&mut current,
+			&mut buffer,
+			buffer_style,
+		);
+
+		if !current.is_empty() {
+			lines.push(current);
+		}
+
+		if lines.is_empty() {
+			lines.push(Vec::new());
+		}
+
+		lines
+	}
+
+	fn push_buffered_side_span<'a>(
+		line: &mut Vec<Span<'a>>,
+		buffer: &mut String,
+		style: Option<Style>,
+	) {
+		if !buffer.is_empty() {
+			if let Some(style) = style {
+				line.push(Span::styled(
+					Cow::from(std::mem::take(buffer)),
+					style,
+				));
+			}
+		}
+	}
+
+	fn side_cell_spans_at<'a>(
+		lines: &[Vec<Span<'a>>],
+		index: usize,
+		width: usize,
+		line_type: DiffLineType,
+		selected: bool,
+		theme: &SharedTheme,
+	) -> Vec<Span<'a>> {
+		let mut spans = lines.get(index).cloned().unwrap_or_default();
+		Self::pad_side_cell_spans(
+			&mut spans, width, line_type, selected, theme,
+		);
+		spans
+	}
+
+	fn pad_side_cell_spans<'a>(
+		spans: &mut Vec<Span<'a>>,
+		width: usize,
+		line_type: DiffLineType,
+		selected: bool,
+		theme: &SharedTheme,
+	) {
+		let visible_width = spans
+			.iter()
+			.map(|span| span.content.as_ref().width())
+			.sum::<usize>();
+		let padding = width.saturating_sub(visible_width);
+
+		if padding > 0 {
+			spans.push(Span::styled(
+				Cow::from(" ".repeat(padding)),
+				theme.diff_line(line_type, selected),
+			));
+		}
 	}
 
 	fn get_text_binary(&self, diff: &FileDiff) -> Vec<Line<'_>> {
@@ -1898,6 +2083,105 @@ mod tests {
 		assert!(lines[1].contains("old"));
 		assert!(lines[1].contains(symbols::line::VERTICAL));
 		assert!(lines[1].contains("new"));
+	}
+
+	#[test]
+	fn side_by_side_wraps_long_left_cell_with_fixed_separator() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		let cell_width = usize::from(component.side_cell_width());
+		let left = "x".repeat(cell_width + 8);
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				&left,
+				DiffLineType::Delete,
+				Some(1),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(1)),
+		]));
+
+		let lines = component
+			.get_text(MIN_SIDE_BY_SIDE_WIDTH, 10)
+			.iter()
+			.map(line_content)
+			.collect::<Vec<_>>();
+
+		assert_eq!(lines.len(), 2);
+		for line in &lines {
+			assert_eq!(
+				line.find(symbols::line::VERTICAL),
+				Some(cell_width)
+			);
+		}
+		assert!(lines[0].starts_with(&"x".repeat(cell_width)));
+		assert!(lines[0].contains("new"));
+		assert!(lines[1].starts_with(&"x".repeat(8)));
+	}
+
+	#[test]
+	fn side_by_side_wraps_left_cell_by_display_width() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		let cell_width = usize::from(component.side_cell_width());
+		let left = "あ".repeat(cell_width);
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				&left,
+				DiffLineType::Delete,
+				Some(1),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(1)),
+		]));
+
+		let lines = component
+			.get_text(MIN_SIDE_BY_SIDE_WIDTH, 10)
+			.iter()
+			.map(line_content)
+			.collect::<Vec<_>>();
+
+		assert!(lines.len() > 1);
+		for line in &lines {
+			let (left, _) =
+				line.split_once(symbols::line::VERTICAL).unwrap();
+			assert_eq!(left.width(), cell_width);
+		}
+	}
+
+	#[test]
+	fn side_by_side_continuation_keeps_short_side_line_style() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		let cell_width = usize::from(component.side_cell_width());
+		let right = "y".repeat(cell_width + 8);
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(1),
+				None,
+			),
+			test_diff_line(&right, DiffLineType::Add, None, Some(1)),
+		]));
+
+		let lines = component.get_text(MIN_SIDE_BY_SIDE_WIDTH, 10);
+
+		assert_eq!(lines.len(), 2);
+		assert_eq!(
+			lines[1].spans[0].content.as_ref(),
+			" ".repeat(cell_width)
+		);
+		assert_eq!(
+			lines[1].spans[0].style,
+			component.theme.diff_line(DiffLineType::Delete, false)
+		);
 	}
 
 	#[test]
