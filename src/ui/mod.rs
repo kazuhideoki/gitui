@@ -12,7 +12,7 @@ pub use diff_syntax::{
 use filetreelist::MoveSelection;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 pub use scrollbar::{draw_scrollbar, Orientation};
-pub use scrolllist::{draw_list, draw_list_block};
+pub use scrolllist::draw_list_block;
 pub use stateful_paragraph::{
 	ParagraphState, ScrollPos, StatefulParagraph,
 };

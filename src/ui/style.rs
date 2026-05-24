@@ -195,6 +195,14 @@ impl Theme {
 		}
 	}
 
+	pub fn line_stats_addition(&self) -> Style {
+		Style::default().fg(self.diff_line_add)
+	}
+
+	pub fn line_stats_deletion(&self) -> Style {
+		Style::default().fg(self.diff_line_delete)
+	}
+
 	pub fn diff_hunk_marker(&self, selected: bool) -> Style {
 		if selected {
 			Style::default().bg(self.selection_bg)

@@ -5,7 +5,7 @@ use super::{
 		get_commit_diff, get_compare_commits_diff, OldNew,
 	},
 	utils::{get_head_repo, work_dir},
-	CommitId, RepoPath,
+	CommitId, RepoPath, ShowUntrackedFilesConfig,
 };
 use crate::{
 	error::Error,
@@ -139,6 +139,15 @@ pub struct FileContent {
 	pub bytes: u64,
 }
 
+/// line change statistics for a diff
+#[derive(Default, Clone, Copy, Hash, Debug, PartialEq, Eq)]
+pub struct LineStats {
+	/// added lines
+	pub additions: usize,
+	/// deleted lines
+	pub deletions: usize,
+}
+
 /// see <https://libgit2.org/libgit2/#HEAD/type/git_diff_options>
 #[derive(
 	Debug, Hash, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
@@ -221,6 +230,56 @@ pub fn get_diff(
 	let diff = get_diff_raw(&repo, p, stage, false, options)?;
 
 	raw_diff_to_file_diff(&diff, work_dir)
+}
+
+/// returns line change statistics either in `stage` or workdir
+pub fn get_diff_line_stats(
+	repo_path: &RepoPath,
+	stage: bool,
+	show_untracked: Option<ShowUntrackedFilesConfig>,
+) -> Result<LineStats> {
+	let repo = repo(repo_path)?;
+	let mut opt = git2::DiffOptions::new();
+
+	let diff = if stage {
+		if let Ok(id) = get_head_repo(&repo) {
+			let parent = repo.find_commit(id.into())?;
+			let tree = parent.tree()?;
+			repo.diff_tree_to_index(
+				Some(&tree),
+				Some(&repo.index()?),
+				Some(&mut opt),
+			)?
+		} else {
+			repo.diff_tree_to_index(
+				None,
+				Some(&repo.index()?),
+				Some(&mut opt),
+			)?
+		}
+	} else {
+		let show_untracked = if let Some(config) = show_untracked {
+			config
+		} else {
+			crate::sync::config::untracked_files_config_repo(&repo)?
+		};
+
+		opt.include_untracked(show_untracked.include_untracked());
+		opt.recurse_untracked_dirs(
+			show_untracked.recurse_untracked_dirs(),
+		);
+		opt.show_untracked_content(
+			show_untracked.include_untracked(),
+		);
+
+		repo.diff_index_to_workdir(None, Some(&mut opt))?
+	};
+
+	let stats = diff.stats()?;
+	Ok(LineStats {
+		additions: stats.insertions(),
+		deletions: stats.deletions(),
+	})
 }
 
 /// returns diff of a specific file inside a commit
@@ -552,7 +611,7 @@ fn new_file_content(path: &Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-	use super::{get_diff, get_diff_commit};
+	use super::{get_diff, get_diff_commit, get_diff_line_stats};
 	use crate::{
 		error::Result,
 		sync::{
@@ -590,6 +649,44 @@ mod tests {
 
 		assert_eq!(diff.hunks.len(), 1);
 		assert_eq!(&*diff.hunks[0].lines[1].content, "test");
+	}
+
+	#[test]
+	fn test_diff_line_stats_for_workdir_and_stage() {
+		let file_path = Path::new("foo.txt");
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		File::create(root.join(file_path))
+			.unwrap()
+			.write_all(b"a\nb\nc\n")
+			.unwrap();
+		stage_add_file(repo_path, file_path).unwrap();
+		commit(repo_path, "add file").unwrap();
+
+		File::create(root.join(file_path))
+			.unwrap()
+			.write_all(b"a\nb2\nc\nd\n")
+			.unwrap();
+
+		let workdir_stats =
+			get_diff_line_stats(repo_path, false, None).unwrap();
+		assert_eq!(workdir_stats.additions, 2);
+		assert_eq!(workdir_stats.deletions, 1);
+
+		stage_add_file(repo_path, file_path).unwrap();
+
+		let stage_stats =
+			get_diff_line_stats(repo_path, true, None).unwrap();
+		assert_eq!(stage_stats.additions, 2);
+		assert_eq!(stage_stats.deletions, 1);
+
+		let workdir_stats =
+			get_diff_line_stats(repo_path, false, None).unwrap();
+		assert_eq!(workdir_stats.additions, 0);
+		assert_eq!(workdir_stats.deletions, 0);
 	}
 
 	#[test]

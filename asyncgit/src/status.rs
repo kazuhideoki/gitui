@@ -2,7 +2,8 @@ use crate::{
 	error::Result,
 	hash,
 	sync::{
-		self, status::StatusType, RepoPath, ShowUntrackedFilesConfig,
+		self, diff::LineStats, status::StatusType, RepoPath,
+		ShowUntrackedFilesConfig,
 	},
 	AsyncGitNotification, StatusItem,
 };
@@ -18,6 +19,8 @@ use std::{
 #[derive(Default, Hash, Clone)]
 pub struct Status {
 	pub items: Vec<StatusItem>,
+	///
+	pub line_stats: LineStats,
 }
 
 ///
@@ -180,12 +183,39 @@ impl AsyncStatus {
 		status_type: StatusType,
 		config: Option<ShowUntrackedFilesConfig>,
 	) -> Result<Status> {
+		let line_stats = match status_type {
+			StatusType::WorkingDir => {
+				sync::diff::get_diff_line_stats(repo, false, config)?
+			}
+			StatusType::Stage => {
+				sync::diff::get_diff_line_stats(repo, true, config)?
+			}
+			StatusType::Both => {
+				let workdir = sync::diff::get_diff_line_stats(
+					repo, false, config,
+				)?;
+				let stage = sync::diff::get_diff_line_stats(
+					repo, true, config,
+				)?;
+
+				LineStats {
+					additions: workdir
+						.additions
+						.saturating_add(stage.additions),
+					deletions: workdir
+						.deletions
+						.saturating_add(stage.deletions),
+				}
+			}
+		};
+
 		Ok(Status {
 			items: sync::status::get_status(
 				repo,
 				status_type,
 				config,
 			)?,
+			line_stats,
 		})
 	}
 }
