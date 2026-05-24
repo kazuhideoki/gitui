@@ -1,10 +1,9 @@
-use super::style::SharedTheme;
 use ratatui::{
 	buffer::Buffer,
 	layout::Rect,
 	style::Style,
-	text::{Span, Text},
-	widgets::{Block, Borders, List, ListItem, Widget},
+	text::Text,
+	widgets::{Block, List, ListItem, Widget},
 	Frame,
 };
 
@@ -52,26 +51,6 @@ where
 			.style(self.style)
 			.render(area, buf);
 	}
-}
-
-pub fn draw_list<'b, L, S>(
-	f: &mut Frame,
-	r: Rect,
-	title: &'b str,
-	items: L,
-	selected: bool,
-	theme: &SharedTheme,
-) where
-	S: Into<Text<'b>>,
-	L: Iterator<Item = S>,
-{
-	let list = ScrollableList::new(items).block(
-		Block::default()
-			.title(Span::styled(title, theme.title(selected)))
-			.borders(Borders::ALL)
-			.border_style(theme.block(selected)),
-	);
-	f.render_widget(list, r);
 }
 
 pub fn draw_list_block<'b, L, S>(

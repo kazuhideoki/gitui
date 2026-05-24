@@ -18,9 +18,16 @@ use crate::{
 	ui::{self, style::SharedTheme},
 };
 use anyhow::Result;
-use asyncgit::{hash, sync::CommitId, StatusItem, StatusItemType};
+use asyncgit::{
+	hash, sync::CommitId, LineStats, StatusItem, StatusItemType,
+};
 use crossterm::event::Event;
-use ratatui::{layout::Rect, text::Span, Frame};
+use ratatui::{
+	layout::Rect,
+	text::{Line, Span},
+	widgets::{Block, Borders},
+	Frame,
+};
 use std::{borrow::Cow, cell::Cell, path::Path};
 
 //TODO: use new `filetreelist` crate
@@ -32,6 +39,7 @@ pub struct StatusTreeComponent {
 	tree: StatusTree,
 	pending: bool,
 	current_hash: u64,
+	line_stats: Option<LineStats>,
 	focused: bool,
 	show_selection: bool,
 	queue: Queue,
@@ -49,6 +57,7 @@ impl StatusTreeComponent {
 			title: title.to_string(),
 			tree: StatusTree::default(),
 			current_hash: 0,
+			line_stats: None,
 			focused: focus,
 			show_selection: focus,
 			queue: env.queue.clone(),
@@ -115,8 +124,17 @@ impl StatusTreeComponent {
 	}
 
 	///
+	pub const fn set_line_stats(
+		&mut self,
+		line_stats: Option<LineStats>,
+	) {
+		self.line_stats = line_stats;
+	}
+
+	///
 	pub fn clear(&mut self) -> Result<()> {
 		self.current_hash = 0;
+		self.line_stats = None;
 		self.pending = true;
 		self.tree.update(&[])
 	}
@@ -330,6 +348,40 @@ impl StatusTreeComponent {
 			_ => {}
 		}
 	}
+
+	fn block(&self) -> Block<'_> {
+		let mut block = Block::default()
+			.title(Span::styled(
+				self.title.as_str(),
+				self.theme.title(self.focused),
+			))
+			.borders(Borders::ALL)
+			.border_style(self.theme.block(self.focused));
+
+		if let Some(line_stats) = self.line_stats {
+			block = block.title(self.line_stats_title(line_stats));
+		}
+
+		block
+	}
+
+	fn line_stats_title(
+		&self,
+		line_stats: LineStats,
+	) -> Line<'static> {
+		Line::from(vec![
+			Span::styled(
+				format!("+{}", line_stats.additions),
+				self.theme.line_stats_addition(),
+			),
+			Span::raw(" "),
+			Span::styled(
+				format!("-{}", line_stats.deletions),
+				self.theme.line_stats_deletion(),
+			),
+		])
+		.right_aligned()
+	}
 }
 
 /// Used for drawing the `FileTreeComponent`
@@ -352,13 +404,11 @@ impl DrawableComponent for StatusTreeComponent {
 				self.theme.text(false, false),
 			)];
 
-			ui::draw_list(
+			ui::draw_list_block(
 				f,
 				r,
-				self.title.as_str(),
+				self.block(),
 				items.into_iter(),
-				self.focused,
-				&self.theme,
 			);
 		} else {
 			let (
@@ -397,14 +447,7 @@ impl DrawableComponent for StatusTreeComponent {
 				})
 				.skip(self.scroll_top.get());
 
-			ui::draw_list(
-				f,
-				r,
-				self.title.as_str(),
-				items,
-				self.focused,
-				&self.theme,
-			);
+			ui::draw_list_block(f, r, self.block(), items);
 		}
 
 		Ok(())
@@ -645,6 +688,45 @@ mod tests {
 			.expect("Draw failed");
 
 		assert_eq!(ftc.scroll_top.get(), 0); // should still be at top
+	}
+
+	#[test]
+	fn test_line_stats_are_drawn_in_title() {
+		let items = string_vec_to_status(&["a/b"]);
+		let mut terminal = ratatui::Terminal::new(
+			ratatui::backend::TestBackend::new(32, 5),
+		)
+		.expect("Unable to set up terminal");
+		let mut ftc = StatusTreeComponent::new(
+			&Environment::test_env(),
+			"title",
+			true,
+		);
+
+		ftc.show().expect("Showing FileTreeComponent failed");
+		ftc.update(&items)
+			.expect("Updating FileTreeComponent failed");
+		ftc.set_line_stats(Some(LineStats {
+			additions: 100,
+			deletions: 50,
+		}));
+
+		terminal
+			.draw(|frame| {
+				ftc.draw(frame, Rect::new(0, 0, 32, 5))
+					.expect("Draw failed");
+			})
+			.expect("Draw failed");
+
+		let rendered = terminal.backend().to_string();
+		let title_line = rendered
+			.lines()
+			.find(|line| line.contains("title"))
+			.unwrap_or_default();
+		assert!(
+			title_line.contains("+100 -50"),
+			"title line: {title_line:?}"
+		);
 	}
 
 	#[test]

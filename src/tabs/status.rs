@@ -226,13 +226,12 @@ impl Status {
 			.alignment(Alignment::Right);
 
 			let mut rect = if self.index_wd.focused() {
-				let mut rect = chunks[0];
-				rect.y += rect.height.saturating_sub(1);
-				rect
+				chunks[0]
 			} else {
 				chunks[1]
 			};
 
+			rect.y += rect.height.saturating_sub(1);
 			rect.x += 1;
 			rect.width = rect.width.saturating_sub(2);
 			rect.height = rect
@@ -463,10 +462,16 @@ impl Status {
 
 	fn update_status(&mut self) -> Result<()> {
 		let stage_status = self.git_status_stage.last()?;
-		self.index.set_items(&stage_status.items)?;
+		self.index.set_items(
+			&stage_status.items,
+			stage_status.line_stats,
+		)?;
 
 		let workdir_status = self.git_status_workdir.last()?;
-		self.index_wd.set_items(&workdir_status.items)?;
+		self.index_wd.set_items(
+			&workdir_status.items,
+			workdir_status.line_stats,
+		)?;
 
 		self.update_diff()?;
 

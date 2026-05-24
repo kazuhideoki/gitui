@@ -14,7 +14,7 @@ use crate::{
 use anyhow::Result;
 use asyncgit::{
 	sync::{self, RepoPathRef},
-	StatusItem, StatusItemType,
+	LineStats, StatusItem, StatusItemType,
 };
 use crossterm::event::Event;
 use ratatui::{layout::Rect, Frame};
@@ -49,8 +49,14 @@ impl ChangesComponent {
 	}
 
 	///
-	pub fn set_items(&mut self, list: &[StatusItem]) -> Result<()> {
+	pub fn set_items(
+		&mut self,
+		list: &[StatusItem],
+		line_stats: LineStats,
+	) -> Result<()> {
 		self.files.show()?;
+		self.files
+			.set_line_stats((!list.is_empty()).then_some(line_stats));
 		self.files.update(list)?;
 		Ok(())
 	}

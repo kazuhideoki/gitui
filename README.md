@@ -29,6 +29,7 @@ The `main` branch in this fork carries focused diff-view improvements on top of 
 - Syntax highlighting for file diffs, with cached asynchronous highlighting for large diffs
 - Diff navigation and display refinements such as hunk jumps, quick context expansion, and adjustable context/interhunk settings
 - Opening a diff selection in the external editor jumps to the corresponding file line when the editor supports line targets
+- Unstaged and staged change panels show total added and deleted line counts in their top borders
 
 ## Local Install From This Fork
 
