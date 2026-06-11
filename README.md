@@ -28,6 +28,7 @@ The `main` branch in this fork carries focused diff-view improvements on top of 
 - Side-by-side diff view, toggleable from the diff panel
 - Syntax highlighting for file diffs, with cached asynchronous highlighting for large diffs
 - Diff navigation and display refinements such as hunk jumps, quick context expansion, and adjustable context/interhunk settings
+- File-list plus diff views keep the diff panel in the classic unified view; side-by-side mode is used only when the diff panel is opened by itself
 - Opening a diff selection in the external editor jumps to the corresponding file line when the editor supports line targets
 - Unstaged and staged change panels show total added and deleted line counts in their top borders
 

@@ -141,7 +141,11 @@ impl DrawableComponent for Status {
 
 		self.index_wd.draw(f, left_chunks[0])?;
 		self.index.draw(f, left_chunks[1])?;
-		self.diff.draw(f, chunks[1])?;
+		if self.focus == Focus::Diff {
+			self.diff.draw(f, chunks[1])?;
+		} else {
+			self.diff.draw_unified(f, chunks[1])?;
+		}
 		self.draw_branch_state(f, &left_chunks);
 
 		if repo_unclean {

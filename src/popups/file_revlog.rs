@@ -488,7 +488,11 @@ impl DrawableComponent for FileRevlogPopup {
 			f.render_widget(Clear, area);
 
 			self.draw_revlog(f, chunks[0]);
-			self.diff.draw(f, chunks[1])?;
+			if self.diff.focused() {
+				self.diff.draw(f, chunks[1])?;
+			} else {
+				self.diff.draw_unified(f, chunks[1])?;
+			}
 		}
 
 		Ok(())
