@@ -475,7 +475,7 @@ impl DiffComponent {
 
 	fn side_cell_width(&self) -> u16 {
 		let content_width =
-			self.current_size.get().0.saturating_sub(1);
+			self.current_size.get().0.saturating_sub(2);
 		content_width / 2
 	}
 
@@ -708,10 +708,17 @@ impl DiffComponent {
 						selected_hunk,
 					),
 				SideBySideDisplayLine::Row(row) => {
+					let end_of_hunk = display_lines
+						.get(display_index.saturating_add(1))
+						.is_none_or(|next| {
+							next.hunk_index() != line.hunk_index()
+						});
 					res.extend(self.get_side_by_side_row(
 						row,
 						cell_width,
 						selected,
+						selected_hunk,
+						end_of_hunk,
 						highlighted,
 					));
 					continue;
@@ -757,6 +764,8 @@ impl DiffComponent {
 		row: &SideBySideLine<'a>,
 		cell_width: u16,
 		selected: bool,
+		selected_hunk: bool,
+		end_of_hunk: bool,
 		highlighted: Option<&'a HighlightedDiff>,
 	) -> Vec<Line<'a>> {
 		let (left_lines, left_line_type) = self.get_side_cell_lines(
@@ -780,14 +789,24 @@ impl DiffComponent {
 		let mut lines = Vec::with_capacity(row_count);
 
 		for visual_index in 0..row_count {
-			let mut spans = Self::side_cell_spans_at(
+			let marker =
+				if end_of_hunk && visual_index == row_count - 1 {
+					symbols::line::BOTTOM_LEFT
+				} else {
+					symbols::line::VERTICAL
+				};
+			let mut spans = vec![Span::styled(
+				Cow::from(marker),
+				self.theme.diff_hunk_marker(selected_hunk),
+			)];
+			spans.extend(Self::side_cell_spans_at(
 				&left_lines,
 				visual_index,
 				width,
 				left_line_type,
 				selected,
 				&self.theme,
-			);
+			));
 			spans.push(Span::styled(
 				Cow::from(symbols::line::VERTICAL),
 				self.theme.diff_hunk_marker(selected),
@@ -2026,6 +2045,13 @@ mod tests {
 			.collect()
 	}
 
+	fn strip_side_by_side_hunk_marker(line: &str) -> &str {
+		line.strip_prefix(symbols::line::VERTICAL)
+			.or_else(|| line.strip_prefix(symbols::line::BOTTOM_LEFT))
+			.or_else(|| line.strip_prefix(symbols::line::TOP_LEFT))
+			.unwrap_or(line)
+	}
+
 	#[test]
 	fn unified_text_renders_headers_changes_empty_lines_and_context()
 	{
@@ -2103,6 +2129,56 @@ mod tests {
 	}
 
 	#[test]
+	fn side_by_side_text_renders_selected_hunk_marker_column() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.focus(true);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		component.selected_hunk = Some(0);
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"@@ -1,2 +1,2 @@",
+				DiffLineType::Header,
+				None,
+				None,
+			),
+			test_diff_line(
+				"context",
+				DiffLineType::None,
+				Some(1),
+				Some(1),
+			),
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(2),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(2)),
+		]));
+
+		let lines = component.get_text(MIN_SIDE_BY_SIDE_WIDTH, 10);
+
+		assert_eq!(
+			lines[0].spans[0].content.as_ref(),
+			symbols::line::TOP_LEFT
+		);
+		assert_eq!(
+			lines[0].spans[0].style,
+			component.theme.diff_hunk_marker(true)
+		);
+		assert_eq!(
+			lines[1].spans[0].content.as_ref(),
+			symbols::line::VERTICAL
+		);
+		assert_eq!(
+			lines[1].spans[0].style,
+			component.theme.diff_hunk_marker(true)
+		);
+	}
+
+	#[test]
 	fn unified_render_override_ignores_side_by_side_view_mode() {
 		let env = Environment::test_env();
 		let mut component = DiffComponent::new(&env, false);
@@ -2160,14 +2236,17 @@ mod tests {
 
 		assert_eq!(lines.len(), 2);
 		for line in &lines {
+			let line = strip_side_by_side_hunk_marker(line);
 			assert_eq!(
 				line.find(symbols::line::VERTICAL),
 				Some(cell_width)
 			);
 		}
-		assert!(lines[0].starts_with(&"x".repeat(cell_width)));
+		assert!(strip_side_by_side_hunk_marker(&lines[0])
+			.starts_with(&"x".repeat(cell_width)));
 		assert!(lines[0].contains("new"));
-		assert!(lines[1].starts_with(&"x".repeat(8)));
+		assert!(strip_side_by_side_hunk_marker(&lines[1])
+			.starts_with(&"x".repeat(8)));
 	}
 
 	#[test]
@@ -2196,6 +2275,7 @@ mod tests {
 
 		assert!(lines.len() > 1);
 		for line in &lines {
+			let line = strip_side_by_side_hunk_marker(line);
 			let (left, _) =
 				line.split_once(symbols::line::VERTICAL).unwrap();
 			assert_eq!(left.width(), cell_width);
@@ -2224,11 +2304,11 @@ mod tests {
 
 		assert_eq!(lines.len(), 2);
 		assert_eq!(
-			lines[1].spans[0].content.as_ref(),
+			lines[1].spans[1].content.as_ref(),
 			" ".repeat(cell_width)
 		);
 		assert_eq!(
-			lines[1].spans[0].style,
+			lines[1].spans[1].style,
 			component.theme.diff_line(DiffLineType::Delete, false)
 		);
 	}
