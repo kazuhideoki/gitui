@@ -60,7 +60,11 @@ impl DrawableComponent for CompareCommitsPopup {
 			f.render_widget(Clear, rect);
 
 			self.details.draw(f, chunks[0])?;
-			self.diff.draw(f, chunks[1])?;
+			if self.diff.focused() {
+				self.diff.draw(f, chunks[1])?;
+			} else {
+				self.diff.draw_unified(f, chunks[1])?;
+			}
 		}
 
 		Ok(())

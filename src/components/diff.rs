@@ -147,6 +147,7 @@ pub struct DiffComponent {
 	is_immutable: bool,
 	options: SharedOptions,
 	view_mode: DiffViewMode,
+	render_view_mode_override: Cell<Option<DiffViewMode>>,
 	syntax_cache: Option<HighlightedDiff>,
 	syntax_job: AsyncSingleJob<AsyncDiffSyntaxJob>,
 	syntax_progress: Option<ProgressPercent>,
@@ -174,6 +175,7 @@ impl DiffComponent {
 			repo: env.repo.clone(),
 			options: env.options.clone(),
 			view_mode: DiffViewMode::Unified,
+			render_view_mode_override: Cell::new(None),
 			syntax_cache: None,
 			syntax_job: AsyncSingleJob::new(env.sender_app.clone()),
 			syntax_progress: None,
@@ -456,12 +458,18 @@ impl DiffComponent {
 		}
 	}
 
+	fn effective_view_mode(&self) -> DiffViewMode {
+		self.render_view_mode_override
+			.get()
+			.unwrap_or(self.view_mode)
+	}
+
 	fn side_by_side_model_active(&self) -> bool {
-		self.view_mode == DiffViewMode::SideBySide
+		self.effective_view_mode() == DiffViewMode::SideBySide
 	}
 
 	fn side_by_side_render_active(&self) -> bool {
-		self.view_mode == DiffViewMode::SideBySide
+		self.effective_view_mode() == DiffViewMode::SideBySide
 			&& self.current_size.get().0 >= MIN_SIDE_BY_SIDE_WIDTH
 	}
 
@@ -1443,7 +1451,8 @@ impl DrawableComponent for DiffComponent {
 		let title = format!(
 			"{}{}{}{}",
 			strings::title_diff(&self.key_config),
-			if self.view_mode == DiffViewMode::SideBySide {
+			if self.effective_view_mode() == DiffViewMode::SideBySide
+			{
 				"[side-by-side] "
 			} else {
 				""
@@ -1487,6 +1496,14 @@ impl DrawableComponent for DiffComponent {
 }
 
 impl DiffComponent {
+	pub fn draw_unified(&self, f: &mut Frame, r: Rect) -> Result<()> {
+		self.render_view_mode_override
+			.set(Some(DiffViewMode::Unified));
+		let result = self.draw(f, r);
+		self.render_view_mode_override.set(None);
+		result
+	}
+
 	fn syntax_title_suffix(&self) -> String {
 		if let Some(progress) = self.syntax_progress {
 			return format!(" [syntax: {}%]", progress.progress);
@@ -2083,6 +2100,38 @@ mod tests {
 		assert!(lines[1].contains("old"));
 		assert!(lines[1].contains(symbols::line::VERTICAL));
 		assert!(lines[1].contains("new"));
+	}
+
+	#[test]
+	fn unified_render_override_ignores_side_by_side_view_mode() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current_size.set((MIN_SIDE_BY_SIDE_WIDTH, 20));
+		component.view_mode = DiffViewMode::SideBySide;
+		component
+			.render_view_mode_override
+			.set(Some(DiffViewMode::Unified));
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(1),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(1)),
+		]));
+
+		let lines = component
+			.get_text(MIN_SIDE_BY_SIDE_WIDTH, 10)
+			.iter()
+			.map(line_content)
+			.collect::<Vec<_>>();
+
+		assert_eq!(lines.len(), 2);
+		assert!(lines[0].contains("old"));
+		assert!(lines[1].contains("new"));
+		assert!(!lines[0].contains("new"));
+		assert!(!lines[1].contains("old"));
 	}
 
 	#[test]
