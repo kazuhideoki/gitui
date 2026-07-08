@@ -42,7 +42,8 @@ use asyncgit::{
 	asyncjob::AsyncSingleJob,
 	hash,
 	sync::{self, diff::DiffLinePosition, RepoPathRef},
-	DiffLine, DiffLineType, DiffParams, FileDiff, ProgressPercent,
+	DiffLine, DiffLineType, DiffParams, FileDiff, LineStats,
+	ProgressPercent,
 };
 use bytesize::ByteSize;
 use crossterm::event::Event;
@@ -1440,6 +1441,63 @@ impl DiffComponent {
 	const fn is_stage(&self) -> bool {
 		self.current.is_stage
 	}
+
+	fn block<'a>(&self, title: &'a str) -> Block<'a> {
+		let mut block = Block::default()
+			.title(Span::styled(
+				title,
+				self.theme.title(self.focused()),
+			))
+			.borders(Borders::ALL)
+			.border_style(self.theme.block(self.focused()));
+
+		if !self.pending {
+			if let Some(line_stats) = self.line_stats() {
+				block =
+					block.title(self.line_stats_title(line_stats));
+			}
+		}
+
+		block
+	}
+
+	fn line_stats(&self) -> Option<LineStats> {
+		let diff = self.diff.as_ref()?;
+		if diff.hunks.is_empty() {
+			return None;
+		}
+
+		let mut line_stats = LineStats::default();
+		for line in
+			diff.hunks.iter().flat_map(|hunk| hunk.lines.iter())
+		{
+			match line.line_type {
+				DiffLineType::Add => line_stats.additions += 1,
+				DiffLineType::Delete => line_stats.deletions += 1,
+				_ => {}
+			}
+		}
+
+		Some(line_stats)
+	}
+
+	fn line_stats_title(
+		&self,
+		line_stats: LineStats,
+	) -> Line<'static> {
+		Line::from(vec![
+			Span::styled(
+				format!("+{}", line_stats.additions),
+				self.theme.line_stats_addition(),
+			),
+			Span::raw(" "),
+			Span::styled(
+				format!("-{}", line_stats.deletions),
+				self.theme.line_stats_deletion(),
+			),
+		])
+		.right_aligned()
+	}
 }
 
 impl DrawableComponent for DiffComponent {
@@ -1490,15 +1548,7 @@ impl DrawableComponent for DiffComponent {
 		};
 
 		f.render_widget(
-			Paragraph::new(txt).block(
-				Block::default()
-					.title(Span::styled(
-						title.as_str(),
-						self.theme.title(self.focused()),
-					))
-					.borders(Borders::ALL)
-					.border_style(self.theme.block(self.focused())),
-			),
+			Paragraph::new(txt).block(self.block(title.as_str())),
 			r,
 		);
 
@@ -2050,6 +2100,63 @@ mod tests {
 			.or_else(|| line.strip_prefix(symbols::line::BOTTOM_LEFT))
 			.or_else(|| line.strip_prefix(symbols::line::TOP_LEFT))
 			.unwrap_or(line)
+	}
+
+	#[test]
+	fn diff_component_draws_line_stats_in_title() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.current.path = String::from("src/main.rs");
+		component.diff = Some(test_file_diff(vec![
+			test_diff_line(
+				"@@ -1,2 +1,3 @@",
+				DiffLineType::Header,
+				None,
+				None,
+			),
+			test_diff_line(
+				"old",
+				DiffLineType::Delete,
+				Some(1),
+				None,
+			),
+			test_diff_line("new", DiffLineType::Add, None, Some(1)),
+			test_diff_line(
+				"another",
+				DiffLineType::Add,
+				None,
+				Some(2),
+			),
+			test_diff_line(
+				"context",
+				DiffLineType::None,
+				Some(2),
+				Some(3),
+			),
+		]));
+
+		let mut terminal = ratatui::Terminal::new(
+			ratatui::backend::TestBackend::new(48, 5),
+		)
+		.expect("Unable to set up terminal");
+
+		terminal
+			.draw(|frame| {
+				component
+					.draw(frame, Rect::new(0, 0, 48, 5))
+					.expect("Draw failed");
+			})
+			.expect("Draw failed");
+
+		let rendered = terminal.backend().to_string();
+		let title_line = rendered
+			.lines()
+			.find(|line| line.contains("Diff:"))
+			.unwrap_or_default();
+		assert!(
+			title_line.contains("+2 -1"),
+			"title line: {title_line:?}"
+		);
 	}
 
 	#[test]
