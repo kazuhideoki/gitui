@@ -389,24 +389,18 @@ impl App {
 		} else if let InputEvent::State(polling_state) = ev {
 			self.external_editor_popup.hide();
 			if matches!(polling_state, InputState::Paused) {
-				let result =
-					if let Some(path) = self.file_to_open.take() {
+				if let Some(path) = self.file_to_open.take() {
+					if let Err(e) =
 						ExternalEditorPopup::open_file_in_editor(
 							&self.repo.borrow(),
 							Path::new(&path.path),
 							path.line,
-						)
-					} else {
-						let changes =
-							self.status_tab.get_files_changes()?;
-						self.commit_popup.show_editor(changes)
-					};
-
-				if let Err(e) = result {
-					let msg =
-						format!("failed to launch editor:\n{e}");
-					log::error!("{}", msg.as_str());
-					self.msg_popup.show_error(msg.as_str())?;
+						) {
+						let msg =
+							format!("failed to launch editor:\n{e}");
+						log::error!("{}", msg.as_str());
+						self.msg_popup.show_error(msg.as_str())?;
+					}
 				}
 
 				self.requires_redraw.set(true);
