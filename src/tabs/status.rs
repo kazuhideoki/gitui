@@ -22,7 +22,7 @@ use asyncgit::{
 	},
 	sync::{BranchCompare, CommitId},
 	AsyncDiff, AsyncGitNotification, AsyncStatus, DiffParams,
-	DiffType, PushType, StatusItem, StatusParams,
+	DiffType, PushType, StatusParams,
 };
 use crossterm::event::Event;
 use itertools::Itertools;
@@ -458,10 +458,6 @@ impl Status {
 
 	pub fn update_async(&mut self, ev: AsyncNotification) {
 		self.diff.update_async(ev);
-	}
-
-	pub fn get_files_changes(&self) -> Result<Vec<StatusItem>> {
-		Ok(self.git_status_stage.last()?.items)
 	}
 
 	fn update_status(&mut self) -> Result<()> {

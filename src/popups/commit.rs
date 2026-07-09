@@ -18,7 +18,6 @@ use asyncgit::{
 		self, get_config_string, CommitId, HookResult,
 		PrepareCommitMsgSource, RepoPathRef, RepoState,
 	},
-	StatusItem, StatusItemType,
 };
 use crossterm::event::Event;
 use easy_cast::Cast;
@@ -29,14 +28,8 @@ use ratatui::{
 };
 
 use std::{
-	fmt::Write as _,
-	fs::{read_to_string, File},
-	io::{Read, Write},
-	path::PathBuf,
-	str::FromStr,
+	fmt::Write as _, fs::read_to_string, path::PathBuf, str::FromStr,
 };
-
-use super::ExternalEditorPopup;
 
 enum CommitResult {
 	CommitDone,
@@ -142,69 +135,6 @@ impl CommitPopup {
 
 			f.render_widget(w, rect);
 		}
-	}
-
-	const fn item_status_char(
-		item_type: StatusItemType,
-	) -> &'static str {
-		match item_type {
-			StatusItemType::Modified => "modified",
-			StatusItemType::New => "new file",
-			StatusItemType::Deleted => "deleted",
-			StatusItemType::Renamed => "renamed",
-			StatusItemType::Typechange => " ",
-			StatusItemType::Conflicted => "conflicted",
-		}
-	}
-
-	pub fn show_editor(
-		&mut self,
-		changes: Vec<StatusItem>,
-	) -> Result<()> {
-		let file_path = sync::repo_dir(&self.repo.borrow())?
-			.join("COMMIT_EDITMSG");
-
-		{
-			let mut file = File::create(&file_path)?;
-			file.write_fmt(format_args!(
-				"{}\n",
-				self.input.get_text()
-			))?;
-			file.write_all(
-				strings::commit_editor_msg(&self.key_config)
-					.as_bytes(),
-			)?;
-
-			file.write_all(b"\n#\n# Changes to be committed:")?;
-
-			for change in changes {
-				let status_char =
-					Self::item_status_char(change.status);
-				let message =
-					format!("\n#\t{status_char}: {}", change.path);
-				file.write_all(message.as_bytes())?;
-			}
-		}
-
-		ExternalEditorPopup::open_file_in_editor(
-			&self.repo.borrow(),
-			&file_path,
-			None,
-		)?;
-
-		let mut message = String::new();
-
-		let mut file = File::open(&file_path)?;
-		file.read_to_string(&mut message)?;
-		drop(file);
-		std::fs::remove_file(&file_path)?;
-
-		message =
-			commit_message_prettify(&self.repo.borrow(), message)?;
-		self.input.set_text(message);
-		self.input.show()?;
-
-		Ok(())
 	}
 
 	fn commit(&mut self) -> Result<()> {
@@ -531,14 +461,6 @@ impl Component for CommitPopup {
 			));
 
 			out.push(CommandInfo::new(
-				strings::commands::commit_open_editor(
-					&self.key_config,
-				),
-				true,
-				true,
-			));
-
-			out.push(CommandInfo::new(
 				strings::commands::commit_next_msg_from_history(
 					&self.key_config,
 				),
@@ -582,15 +504,6 @@ impl Component for CommitPopup {
 					) && self.can_amend()
 					{
 						self.amend()?;
-						true
-					} else if key_match(
-						e,
-						self.key_config.keys.open_commit_editor,
-					) {
-						self.queue.push(
-							InternalEvent::OpenExternalEditor(None),
-						);
-						self.hide();
 						true
 					} else if key_match(
 						e,
