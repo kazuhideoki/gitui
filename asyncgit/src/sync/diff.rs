@@ -264,13 +264,13 @@ pub fn get_diff_line_stats(
 			crate::sync::config::untracked_files_config_repo(&repo)?
 		};
 
-		opt.include_untracked(show_untracked.include_untracked());
-		opt.recurse_untracked_dirs(
-			show_untracked.recurse_untracked_dirs(),
-		);
-		opt.show_untracked_content(
-			show_untracked.include_untracked(),
-		);
+		let include_untracked = show_untracked.include_untracked();
+
+		opt.include_untracked(include_untracked);
+		// `normal` collapses untracked directories in the status list, but
+		// line statistics must still include the files they contain.
+		opt.recurse_untracked_dirs(include_untracked);
+		opt.show_untracked_content(include_untracked);
 
 		repo.diff_index_to_workdir(None, Some(&mut opt))?
 	};
@@ -686,6 +686,69 @@ mod tests {
 		let workdir_stats =
 			get_diff_line_stats(repo_path, false, None).unwrap();
 		assert_eq!(workdir_stats.additions, 0);
+		assert_eq!(workdir_stats.deletions, 0);
+	}
+
+	#[test]
+	fn test_diff_line_stats_for_untracked_file() {
+		let file_path = Path::new("foo.txt");
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		File::create(root.join(file_path))
+			.unwrap()
+			.write_all(b"one\ntwo\nthree\n")
+			.unwrap();
+
+		let workdir_stats =
+			get_diff_line_stats(repo_path, false, None).unwrap();
+		assert_eq!(workdir_stats.additions, 3);
+		assert_eq!(workdir_stats.deletions, 0);
+	}
+
+	#[test]
+	fn test_diff_line_stats_for_staged_new_file() {
+		let file_path = Path::new("foo.txt");
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		File::create(root.join(file_path))
+			.unwrap()
+			.write_all(b"one\ntwo\nthree\n")
+			.unwrap();
+		stage_add_file(repo_path, file_path).unwrap();
+
+		let stage_stats =
+			get_diff_line_stats(repo_path, true, None).unwrap();
+		assert_eq!(stage_stats.additions, 3);
+		assert_eq!(stage_stats.deletions, 0);
+	}
+
+	#[test]
+	fn test_diff_line_stats_for_untracked_file_in_collapsed_directory(
+	) {
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		fs::create_dir(root.join("foo")).unwrap();
+		File::create(root.join("foo/bar.txt"))
+			.unwrap()
+			.write_all(b"one\ntwo\nthree\n")
+			.unwrap();
+		repo.config()
+			.unwrap()
+			.set_str("status.showUntrackedFiles", "normal")
+			.unwrap();
+
+		let workdir_stats =
+			get_diff_line_stats(repo_path, false, None).unwrap();
+		assert_eq!(workdir_stats.additions, 3);
 		assert_eq!(workdir_stats.deletions, 0);
 	}
 
