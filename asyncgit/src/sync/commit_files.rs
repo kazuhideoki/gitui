@@ -4,7 +4,7 @@ use super::{diff::DiffOptions, CommitId, RepoPath};
 use crate::{
 	error::Result,
 	sync::{get_stashes, repository::repo},
-	StatusItem, StatusItemType,
+	LineStats, StatusItem, StatusItemType,
 };
 use git2::{Diff, Repository};
 use scopetime::scope_time;
@@ -46,6 +46,16 @@ pub fn get_commit_files(
 	id: CommitId,
 	other: Option<CommitId>,
 ) -> Result<Vec<StatusItem>> {
+	get_commit_files_with_line_stats(repo_path, id, other)
+		.map(|(files, _)| files)
+}
+
+/// get all files and aggregate line statistics for a commit
+pub fn get_commit_files_with_line_stats(
+	repo_path: &RepoPath,
+	id: CommitId,
+	other: Option<CommitId>,
+) -> Result<(Vec<StatusItem>, LineStats)> {
 	scope_time!("get_commit_files");
 
 	let repo = repo(repo_path)?;
@@ -67,7 +77,12 @@ pub fn get_commit_files(
 		)?
 	};
 
-	let res = diff
+	let stats = diff.stats()?;
+	let line_stats = LineStats {
+		additions: stats.insertions(),
+		deletions: stats.deletions(),
+	};
+	let files = diff
 		.deltas()
 		.map(|delta| {
 			let status = StatusItemType::from(delta.status());
@@ -83,7 +98,7 @@ pub fn get_commit_files(
 		})
 		.collect::<Vec<_>>();
 
-	Ok(res)
+	Ok((files, line_stats))
 }
 
 /// get diff of two arbitrary commits
@@ -181,7 +196,7 @@ pub(crate) fn get_commit_diff<'a>(
 
 #[cfg(test)]
 mod tests {
-	use super::get_commit_files;
+	use super::{get_commit_files, get_commit_files_with_line_stats};
 	use crate::{
 		error::Result,
 		sync::{
@@ -212,6 +227,29 @@ mod tests {
 
 		assert_eq!(diff.len(), 1);
 		assert_eq!(diff[0].status, StatusItemType::New);
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_line_stats() -> Result<()> {
+		let file_path = Path::new("file1.txt");
+		let (_td, repo) = repo_init()?;
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		File::create(root.join(file_path))?
+			.write_all(b"first\nsecond\n")?;
+		stage_add_file(repo_path, file_path)?;
+		let id = commit(repo_path, "commit msg")?;
+
+		let (files, line_stats) =
+			get_commit_files_with_line_stats(repo_path, id, None)?;
+
+		assert_eq!(files.len(), 1);
+		assert_eq!(line_stats.additions, 2);
+		assert_eq!(line_stats.deletions, 0);
 
 		Ok(())
 	}
