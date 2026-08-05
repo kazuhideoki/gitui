@@ -1,7 +1,7 @@
 use crate::{
 	error::Result,
 	sync::{self, commit_files::OldNew, CommitId, RepoPath},
-	AsyncGitNotification, StatusItem,
+	AsyncGitNotification, LineStats, StatusItem,
 };
 use crossbeam_channel::Sender;
 use std::sync::{
@@ -9,7 +9,7 @@ use std::sync::{
 	Arc, Mutex,
 };
 
-type ResultType = Vec<StatusItem>;
+type ResultType = (Vec<StatusItem>, LineStats);
 struct Request<R, A>(R, A);
 
 ///
@@ -128,13 +128,18 @@ impl AsyncCommitFiles {
 			Mutex<Option<Request<CommitFilesParams, ResultType>>>,
 		>,
 	) -> Result<()> {
-		let res = sync::get_commit_files(
-			repo_path,
-			params.id,
-			params.other,
-		)?;
+		let res =
+			sync::commit_files::get_commit_files_with_line_stats(
+				repo_path,
+				params.id,
+				params.other,
+			)?;
 
-		log::trace!("get_commit_files: {:?} ({})", params, res.len());
+		log::trace!(
+			"get_commit_files: {:?} ({})",
+			params,
+			res.0.len()
+		);
 
 		{
 			let mut current = arc_current.lock()?;

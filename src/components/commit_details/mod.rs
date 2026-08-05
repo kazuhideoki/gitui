@@ -73,6 +73,7 @@ impl CommitDetailsComponent {
 		if params.is_none() {
 			self.single_details.set_commit(None, None);
 			self.compare_details.set_commits(None);
+			self.file_tree.set_line_stats(None);
 		}
 
 		self.commit = params;
@@ -90,11 +91,12 @@ impl CommitDetailsComponent {
 					.set_commit(Some(id.id), tags.cloned());
 			}
 
-			if let Some((fetched_id, res)) =
+			if let Some((fetched_id, (files, line_stats))) =
 				self.git_commit_files.current()?
 			{
 				if fetched_id == id {
-					self.file_tree.update(res.as_slice())?;
+					self.file_tree.update(files.as_slice())?;
+					self.file_tree.set_line_stats(Some(line_stats));
 					self.file_tree.set_title(self.get_files_title());
 
 					return Ok(());
@@ -102,6 +104,7 @@ impl CommitDetailsComponent {
 			}
 
 			self.file_tree.clear()?;
+			self.file_tree.set_line_stats(None);
 			self.git_commit_files.fetch(id)?;
 		}
 
