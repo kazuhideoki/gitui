@@ -9,6 +9,59 @@ use struct_patch::Patch;
 
 pub type SharedTheme = Rc<Theme>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SystemAppearance {
+	Dark,
+	Light,
+}
+
+impl SystemAppearance {
+	#[cfg(target_os = "macos")]
+	fn from_defaults_result(
+		success: bool,
+		stdout: &[u8],
+		stderr: &[u8],
+	) -> Self {
+		if success {
+			return match String::from_utf8_lossy(stdout).trim() {
+				"Light" => Self::Light,
+				_ => Self::Dark,
+			};
+		}
+
+		// A missing key is macOS's normal representation of Light mode.
+		// Other command failures should not be mistaken for Light mode.
+		let error = String::from_utf8_lossy(stderr);
+		if error.contains("AppleInterfaceStyle")
+			&& error.contains("does not exist")
+		{
+			Self::Light
+		} else {
+			Self::Dark
+		}
+	}
+
+	fn current() -> Self {
+		#[cfg(target_os = "macos")]
+		{
+			// macOS has no AppleInterfaceStyle value while Light is selected.
+			// Read it once at startup, before the terminal enters raw mode.
+			if let Ok(output) = std::process::Command::new("defaults")
+				.args(["read", "-g", "AppleInterfaceStyle"])
+				.output()
+			{
+				return Self::from_defaults_result(
+					output.status.success(),
+					&output.stdout,
+					&output.stderr,
+				);
+			}
+		}
+
+		Self::Dark
+	}
+}
+
 const fn default_color_reset() -> Color {
 	Color::Reset
 }
@@ -345,10 +398,10 @@ impl Theme {
 		Ok(ron::de::from_reader::<File, Self>(old_file)?)
 	}
 
-	// This is supposed to be called when theme.ron doesn't already exists.
+	// Preserve every value of a legacy full theme across appearance changes.
 	fn save_patch(&self, theme_path: &PathBuf) -> Result<()> {
 		let mut file = File::create(theme_path)?;
-		let patch = self.clone().into_patch_by_diff(Self::default());
+		let patch = self.clone().into_patch();
 		let data = to_string_pretty(&patch, PrettyConfig::default())?;
 
 		file.write_all(data.as_bytes())?;
@@ -361,7 +414,17 @@ impl Theme {
 	}
 
 	pub fn init(theme_path: &PathBuf) -> Self {
-		let mut theme = Self::default();
+		Self::init_for_appearance(
+			theme_path,
+			SystemAppearance::current(),
+		)
+	}
+
+	fn init_for_appearance(
+		theme_path: &PathBuf,
+		appearance: SystemAppearance,
+	) -> Self {
+		let mut theme = Self::for_appearance(appearance);
 
 		if let Ok(patch) = Self::load_patch(theme_path).map_err(|e| {
 			log::error!("theme error [{theme_path:?}]: {e}");
@@ -379,6 +442,18 @@ impl Theme {
 			}
 		}
 
+		theme
+	}
+
+	fn for_appearance(appearance: SystemAppearance) -> Self {
+		let mut theme = Self::default();
+		if appearance == SystemAppearance::Light {
+			theme.diff_line_add = Color::Rgb(26, 127, 55);
+			theme.diff_line_delete = Color::Rgb(207, 34, 46);
+			theme.diff_line_add_bg = Color::Rgb(230, 247, 230);
+			theme.diff_line_delete_bg = Color::Rgb(255, 235, 235);
+			theme.syntax = "InspiredGitHub".to_string();
+		}
 		theme
 	}
 }
@@ -424,6 +499,103 @@ mod tests {
 	use super::*;
 	use pretty_assertions::assert_eq;
 	use tempfile::NamedTempFile;
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn macos_appearance_distinguishes_missing_key_from_read_failure()
+	{
+		assert_eq!(
+			SystemAppearance::from_defaults_result(
+				true, b"Dark\n", b""
+			),
+			SystemAppearance::Dark
+		);
+		assert_eq!(
+			SystemAppearance::from_defaults_result(
+				false,
+				b"",
+				b"The domain/default pair of (kCFPreferencesAnyApplication, AppleInterfaceStyle) does not exist"
+			),
+			SystemAppearance::Light
+		);
+		assert_eq!(
+			SystemAppearance::from_defaults_result(
+				false,
+				b"",
+				b"Permission denied"
+			),
+			SystemAppearance::Dark
+		);
+	}
+
+	#[test]
+	fn light_appearance_uses_readable_diff_and_syntax_colors() {
+		let light = Theme::for_appearance(SystemAppearance::Light);
+		let dark = Theme::for_appearance(SystemAppearance::Dark);
+
+		assert_eq!(
+			light.diff_line_background(DiffLineType::Add),
+			Some(Color::Rgb(230, 247, 230))
+		);
+		assert_eq!(
+			light.diff_line_background(DiffLineType::Delete),
+			Some(Color::Rgb(255, 235, 235))
+		);
+		assert_eq!(light.get_syntax(), "InspiredGitHub");
+		assert_eq!(light.diff_line_add, Color::Rgb(26, 127, 55));
+		assert_eq!(light.diff_line_delete, Color::Rgb(207, 34, 46));
+		assert!(syntect::highlighting::ThemeSet::load_defaults()
+			.themes
+			.contains_key(&light.get_syntax()));
+		assert_eq!(dark.diff_line_add_bg, default_diff_line_add_bg());
+		assert_eq!(dark.get_syntax(), DEFAULT_SYNTAX_THEME);
+	}
+
+	#[test]
+	fn theme_overrides_apply_after_appearance_defaults() {
+		let mut file = NamedTempFile::new().unwrap();
+		writeln!(
+			file,
+			r##"(diff_line_add_bg: Some("#abcdef"), syntax: Some("Solarized (light)"))"##
+		)
+		.unwrap();
+
+		let theme = Theme::init_for_appearance(
+			&file.path().to_path_buf(),
+			SystemAppearance::Light,
+		);
+		assert_eq!(theme.diff_line_add_bg, Color::Rgb(171, 205, 239));
+		assert_eq!(
+			theme.diff_line_delete_bg,
+			Color::Rgb(255, 235, 235)
+		);
+		assert_eq!(theme.get_syntax(), "Solarized (light)");
+	}
+
+	#[test]
+	fn legacy_theme_keeps_all_colors_after_migration() {
+		let mut file = NamedTempFile::new().unwrap();
+		let original = Theme::default();
+		writeln!(file, "{}", ron::ser::to_string(&original).unwrap())
+			.unwrap();
+
+		let path = file.path().to_path_buf();
+		let first = Theme::init_for_appearance(
+			&path,
+			SystemAppearance::Light,
+		);
+		let second = Theme::init_for_appearance(
+			&path,
+			SystemAppearance::Light,
+		);
+		let dark =
+			Theme::init_for_appearance(&path, SystemAppearance::Dark);
+
+		let original = ron::ser::to_string(&original).unwrap();
+		assert_eq!(ron::ser::to_string(&first).unwrap(), original);
+		assert_eq!(ron::ser::to_string(&second).unwrap(), original);
+		assert_eq!(ron::ser::to_string(&dark).unwrap(), original);
+	}
 
 	#[test]
 	fn test_smoke() {
