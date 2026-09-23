@@ -16,6 +16,15 @@ enum SystemAppearance {
 }
 
 impl SystemAppearance {
+	fn from_terminal_mode(
+		mode: terminal_colorsaurus::ThemeMode,
+	) -> Self {
+		match mode {
+			terminal_colorsaurus::ThemeMode::Dark => Self::Dark,
+			terminal_colorsaurus::ThemeMode::Light => Self::Light,
+		}
+	}
+
 	#[cfg(target_os = "macos")]
 	fn from_defaults_result(
 		success: bool,
@@ -42,6 +51,18 @@ impl SystemAppearance {
 	}
 
 	fn current() -> Self {
+		// The terminal can use a different appearance from macOS, for
+		// example when its host application is set to Dark manually.
+		if let Ok(mode) = terminal_colorsaurus::theme_mode(
+			terminal_colorsaurus::QueryOptions::default(),
+		) {
+			log::debug!("terminal appearance: {mode:?}");
+			return Self::from_terminal_mode(mode);
+		}
+		log::debug!(
+			"terminal appearance unavailable; using system fallback"
+		);
+
 		#[cfg(target_os = "macos")]
 		{
 			// macOS has no AppleInterfaceStyle value while Light is selected.
