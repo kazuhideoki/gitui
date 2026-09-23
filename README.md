@@ -31,7 +31,7 @@ The `main` branch in this fork carries focused diff-view improvements on top of 
 - File-list plus diff views keep the diff panel in the classic unified view; side-by-side mode is used only when the diff panel is opened by itself
 - Opening a diff selection in the external editor jumps to the corresponding file line when the editor supports line targets
 - Unstaged and staged change panels show total added and deleted line counts in their top borders
-- On macOS, diff colors and syntax highlighting follow the system light or dark appearance when GitUI starts
+- Diff colors and syntax highlighting follow the terminal's light or dark background when GitUI starts, with macOS appearance as a fallback
 
 ## Local Install From This Fork
 
@@ -289,7 +289,7 @@ This will log to:
 
 ![](assets/light-theme.png)
 
-On macOS, this fork reads the system appearance when GitUI starts. Light mode uses pale added and deleted line backgrounds and the `InspiredGitHub` syntax theme; dark mode keeps the existing colors. Restart GitUI after changing the system appearance. A terminal theme that differs from the system appearance can be adjusted with `theme.ron`.
+This fork queries the terminal background when GitUI starts, so an app-specific dark terminal receives dark diff colors even if macOS is in Light mode. If the terminal does not support color queries, macOS appearance is used as a fallback. Light mode uses pale added and deleted line backgrounds and the `InspiredGitHub` syntax theme; dark mode keeps the existing colors. Restart GitUI after changing the terminal theme. Colors can also be adjusted with `theme.ron`.
 
 However, you can customize everything to your liking: See [Themes](THEMES.md).
 
