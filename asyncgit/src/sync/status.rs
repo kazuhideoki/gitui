@@ -368,4 +368,28 @@ mod tests {
 			}]
 		);
 	}
+
+	#[test]
+	fn test_get_status_collapses_untracked_directory() {
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+		std::fs::create_dir_all(root.join("nested/child")).unwrap();
+		std::fs::write(root.join("nested/child/new.txt"), "one\n")
+			.unwrap();
+		let items = get_status(
+			repo_path,
+			StatusType::WorkingDir,
+			Some(ShowUntrackedFilesConfig::Normal),
+		)
+		.unwrap();
+		assert_eq!(
+			items,
+			vec![StatusItem {
+				path: "nested".into(),
+				status: StatusItemType::New,
+			}]
+		);
+	}
 }

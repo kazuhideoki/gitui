@@ -376,6 +376,9 @@ impl Status {
 			DiffTarget::WorkingDir => (&self.index_wd, false),
 		};
 
+		if idx.selected_directory_summary().is_some() {
+			return None;
+		}
 		if let Some(item) = idx.selection() {
 			if let FileTreeItemKind::File(i) = item.kind {
 				return Some((i.path, is_stage));
@@ -465,12 +468,14 @@ impl Status {
 		self.index.set_items(
 			&stage_status.items,
 			stage_status.line_stats,
+			stage_status.directory_line_stats,
 		)?;
 
 		let workdir_status = self.git_status_workdir.last()?;
 		self.index_wd.set_items(
 			&workdir_status.items,
 			workdir_status.line_stats,
+			workdir_status.directory_line_stats,
 		)?;
 
 		self.update_diff()?;
@@ -534,7 +539,19 @@ impl Status {
 				self.request_diff(diff_params, path, is_stage)?;
 			}
 		} else {
-			self.diff.clear(false);
+			let directory = match self.diff_target {
+				DiffTarget::Stage => {
+					self.index.selected_directory_summary()
+				}
+				DiffTarget::WorkingDir => {
+					self.index_wd.selected_directory_summary()
+				}
+			};
+			if let Some((path, stats)) = directory {
+				self.diff.show_directory_summary(path, stats);
+			} else {
+				self.diff.clear(false);
+			}
 		}
 
 		Ok(())
