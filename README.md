@@ -31,6 +31,7 @@ The `main` branch in this fork carries focused diff-view improvements on top of 
 - File-list plus diff views keep the diff panel in the classic unified view; side-by-side mode is used only when the diff panel is opened by itself
 - Opening a diff selection in the external editor jumps to the corresponding file line when the editor supports line targets
 - Unstaged and staged change panels show total added and deleted line counts in their top borders
+- Selecting a directory in the change tree shows its recursive added and deleted line totals in the diff panel's top-right border
 - Diff colors and syntax highlighting follow the terminal's light or dark background when GitUI starts, with macOS appearance as a fallback
 
 ## Local Install From This Fork

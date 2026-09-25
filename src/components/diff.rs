@@ -153,6 +153,7 @@ pub struct DiffComponent {
 	syntax_job: AsyncSingleJob<AsyncDiffSyntaxJob>,
 	syntax_progress: Option<ProgressPercent>,
 	current_diff_params: Option<DiffParams>,
+	directory_summary: Option<(String, LineStats)>,
 }
 
 impl DiffComponent {
@@ -181,6 +182,7 @@ impl DiffComponent {
 			syntax_job: AsyncSingleJob::new(env.sender_app.clone()),
 			syntax_progress: None,
 			current_diff_params: None,
+			directory_summary: None,
 		}
 	}
 	///
@@ -208,7 +210,18 @@ impl DiffComponent {
 		self.syntax_cache = None;
 		self.syntax_progress = None;
 		self.current_diff_params = None;
+		self.directory_summary = None;
 		self.syntax_job.cancel();
+	}
+
+	/// Show only the aggregate line changes below a selected directory.
+	pub fn show_directory_summary(
+		&mut self,
+		path: String,
+		stats: LineStats,
+	) {
+		self.clear(false);
+		self.directory_summary = Some((path, stats));
 	}
 	///
 	pub fn update(
@@ -219,6 +232,7 @@ impl DiffComponent {
 		diff_params: DiffParams,
 	) {
 		self.pending = false;
+		self.directory_summary = None;
 
 		let hash = hash(&diff);
 		let highlight_key =
@@ -1452,7 +1466,12 @@ impl DiffComponent {
 			.border_style(self.theme.block(self.focused()));
 
 		if !self.pending {
-			if let Some(line_stats) = self.line_stats() {
+			if let Some(line_stats) = self
+				.directory_summary
+				.as_ref()
+				.map(|(_, stats)| *stats)
+				.or_else(|| self.line_stats())
+			{
 				block =
 					block.title(self.line_stats_title(line_stats));
 			}
@@ -1528,14 +1547,23 @@ impl DrawableComponent for DiffComponent {
 		let title = format!(
 			"{}{}{}{}",
 			strings::title_diff(&self.key_config),
-			if self.effective_view_mode() == DiffViewMode::SideBySide
+			if self.directory_summary.is_none()
+				&& self.effective_view_mode()
+					== DiffViewMode::SideBySide
 			{
 				"[side-by-side] "
 			} else {
 				""
 			},
-			self.current.path,
-			self.syntax_title_suffix()
+			self.directory_summary
+				.as_ref()
+				.map_or(self.current.path.as_str(), |(path, _)| path
+					.as_str()),
+			if self.directory_summary.is_some() {
+				String::new()
+			} else {
+				self.syntax_title_suffix()
+			}
 		);
 
 		let txt = if self.pending {
@@ -1543,6 +1571,8 @@ impl DrawableComponent for DiffComponent {
 				Cow::from(strings::loading_text(&self.key_config)),
 				self.theme.text(false, false),
 			)])]
+		} else if self.directory_summary.is_some() {
+			Vec::new()
 		} else {
 			self.get_text(r.width, current_height)
 		};
@@ -2157,6 +2187,48 @@ mod tests {
 			title_line.contains("+2 -1"),
 			"title line: {title_line:?}"
 		);
+	}
+
+	#[test]
+	fn directory_summary_draws_counts_without_file_content() {
+		let env = Environment::test_env();
+		let mut component = DiffComponent::new(&env, false);
+		component.show_directory_summary(
+			"service/rdb".to_string(),
+			LineStats {
+				additions: 7,
+				deletions: 3,
+			},
+		);
+		let mut terminal = ratatui::Terminal::new(
+			ratatui::backend::TestBackend::new(48, 5),
+		)
+		.unwrap();
+		terminal
+			.draw(|frame| {
+				component.draw(frame, Rect::new(0, 0, 48, 5)).unwrap()
+			})
+			.unwrap();
+		let rendered = terminal.backend().to_string();
+		let title_line = rendered.lines().next().unwrap();
+		assert!(title_line.contains("Diff: service/rdb"));
+		assert!(title_line.contains("+7 -3"));
+		let addition_x =
+			title_line.chars().position(|c| c == '+').unwrap() - 1;
+		let deletion_x =
+			title_line.chars().position(|c| c == '-').unwrap() - 1;
+		let buffer = terminal.backend().buffer();
+		assert_eq!(
+			buffer.cell((addition_x as u16, 0)).unwrap().fg,
+			env.theme.line_stats_addition().fg.unwrap()
+		);
+		assert_eq!(
+			buffer.cell((deletion_x as u16, 0)).unwrap().fg,
+			env.theme.line_stats_deletion().fg.unwrap()
+		);
+		assert!(rendered.lines().skip(1).take(3).all(|line| line
+			.trim_matches(['"', '│', ' '])
+			.is_empty()));
 	}
 
 	#[test]

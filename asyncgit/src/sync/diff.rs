@@ -20,7 +20,9 @@ use git2::{
 };
 use scopetime::scope_time;
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, fs, path::Path, rc::Rc};
+use std::{
+	cell::RefCell, collections::BTreeMap, fs, path::Path, rc::Rc,
+};
 
 /// type of diff of a single line
 #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, Debug)]
@@ -239,10 +241,67 @@ pub fn get_diff_line_stats(
 	show_untracked: Option<ShowUntrackedFilesConfig>,
 ) -> Result<LineStats> {
 	let repo = repo(repo_path)?;
+	let diff = get_status_diff(&repo, stage, show_untracked)?;
+	let stats = diff.stats()?;
+	Ok(LineStats {
+		additions: stats.insertions(),
+		deletions: stats.deletions(),
+	})
+}
+
+/// Returns total line changes and a sum for every ancestor directory of each
+/// changed file. The same diff is used for both totals.
+pub fn get_diff_line_stats_by_directory(
+	repo_path: &RepoPath,
+	stage: bool,
+	show_untracked: Option<ShowUntrackedFilesConfig>,
+) -> Result<(LineStats, BTreeMap<String, LineStats>)> {
+	let repo = repo(repo_path)?;
+	let diff = get_status_diff(&repo, stage, show_untracked)?;
+	let mut total = LineStats::default();
+	let mut directories = BTreeMap::<String, LineStats>::new();
+	for (index, delta) in diff.deltas().enumerate() {
+		let Some(path) = delta
+			.new_file()
+			.path()
+			.or_else(|| delta.old_file().path())
+		else {
+			continue;
+		};
+		let (additions, deletions) = Patch::from_diff(&diff, index)?
+			.map_or(Ok((0, 0)), |patch| {
+				patch.line_stats().map(|(_, additions, deletions)| {
+					(additions, deletions)
+				})
+			})?;
+		total.additions += additions;
+		total.deletions += deletions;
+		let mut parent = path.parent();
+		while let Some(directory) =
+			parent.filter(|p| !p.as_os_str().is_empty())
+		{
+			if let Some(directory) = directory.to_str() {
+				let entry = directories
+					.entry(directory.to_string())
+					.or_default();
+				entry.additions += additions;
+				entry.deletions += deletions;
+			}
+			parent = directory.parent();
+		}
+	}
+	Ok((total, directories))
+}
+
+fn get_status_diff(
+	repo: &Repository,
+	stage: bool,
+	show_untracked: Option<ShowUntrackedFilesConfig>,
+) -> Result<Diff<'_>> {
 	let mut opt = git2::DiffOptions::new();
 
 	let diff = if stage {
-		if let Ok(id) = get_head_repo(&repo) {
+		if let Ok(id) = get_head_repo(repo) {
 			let parent = repo.find_commit(id.into())?;
 			let tree = parent.tree()?;
 			repo.diff_tree_to_index(
@@ -261,7 +320,7 @@ pub fn get_diff_line_stats(
 		let show_untracked = if let Some(config) = show_untracked {
 			config
 		} else {
-			crate::sync::config::untracked_files_config_repo(&repo)?
+			crate::sync::config::untracked_files_config_repo(repo)?
 		};
 
 		let include_untracked = show_untracked.include_untracked();
@@ -275,11 +334,7 @@ pub fn get_diff_line_stats(
 		repo.diff_index_to_workdir(None, Some(&mut opt))?
 	};
 
-	let stats = diff.stats()?;
-	Ok(LineStats {
-		additions: stats.insertions(),
-		deletions: stats.deletions(),
-	})
+	Ok(diff)
 }
 
 /// returns diff of a specific file inside a commit
@@ -611,7 +666,10 @@ fn new_file_content(path: &Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-	use super::{get_diff, get_diff_commit, get_diff_line_stats};
+	use super::{
+		get_diff, get_diff_commit, get_diff_line_stats,
+		get_diff_line_stats_by_directory, LineStats,
+	};
 	use crate::{
 		error::Result,
 		sync::{
@@ -750,6 +808,122 @@ mod tests {
 			get_diff_line_stats(repo_path, false, None).unwrap();
 		assert_eq!(workdir_stats.additions, 3);
 		assert_eq!(workdir_stats.deletions, 0);
+	}
+
+	#[test]
+	fn test_directory_line_stats_include_nested_files_and_separate_stage(
+	) {
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		fs::create_dir_all(root.join("service/rdb/query")).unwrap();
+		fs::create_dir_all(root.join("service/other")).unwrap();
+		for path in [
+			"service/rdb/query/one.txt",
+			"service/rdb/two.txt",
+			"service/other/three.txt",
+		] {
+			fs::write(root.join(path), "old\n").unwrap();
+			stage_add_file(repo_path, Path::new(path)).unwrap();
+		}
+		commit(repo_path, "add files").unwrap();
+
+		fs::write(
+			root.join("service/rdb/query/one.txt"),
+			"new\nadded\n",
+		)
+		.unwrap();
+		fs::write(root.join("service/rdb/two.txt"), "new\n").unwrap();
+		fs::write(root.join("service/other/three.txt"), "new\n")
+			.unwrap();
+		stage_add_file(repo_path, Path::new("service/rdb/two.txt"))
+			.unwrap();
+
+		let (workdir_total, workdir) =
+			get_diff_line_stats_by_directory(repo_path, false, None)
+				.unwrap();
+		assert_eq!(
+			workdir_total,
+			get_diff_line_stats(repo_path, false, None).unwrap()
+		);
+		assert_eq!(
+			workdir["service/rdb/query"],
+			LineStats {
+				additions: 2,
+				deletions: 1
+			}
+		);
+		assert_eq!(
+			workdir["service/rdb"],
+			LineStats {
+				additions: 2,
+				deletions: 1
+			}
+		);
+		assert_eq!(
+			workdir["service"],
+			LineStats {
+				additions: 3,
+				deletions: 2
+			}
+		);
+
+		let (stage_total, stage) =
+			get_diff_line_stats_by_directory(repo_path, true, None)
+				.unwrap();
+		assert_eq!(
+			stage_total,
+			get_diff_line_stats(repo_path, true, None).unwrap()
+		);
+		assert_eq!(
+			stage["service/rdb"],
+			LineStats {
+				additions: 1,
+				deletions: 1
+			}
+		);
+		assert!(!stage.contains_key("service/rdb/query"));
+	}
+
+	#[test]
+	fn test_directory_line_stats_include_untracked_content() {
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+		fs::create_dir_all(root.join("service/rdb")).unwrap();
+		fs::write(root.join("service/rdb/new.txt"), "one\ntwo\n")
+			.unwrap();
+		fs::write(root.join("service/rdb/blob.bin"), b"\0binary")
+			.unwrap();
+		repo.config()
+			.unwrap()
+			.set_str("status.showUntrackedFiles", "normal")
+			.unwrap();
+
+		let (total, directories) =
+			get_diff_line_stats_by_directory(repo_path, false, None)
+				.unwrap();
+		assert_eq!(
+			total,
+			get_diff_line_stats(repo_path, false, None).unwrap()
+		);
+		assert_eq!(
+			directories["service/rdb"],
+			LineStats {
+				additions: 2,
+				deletions: 0
+			}
+		);
+		assert_eq!(
+			directories["service"],
+			LineStats {
+				additions: 2,
+				deletions: 0
+			}
+		);
 	}
 
 	#[test]

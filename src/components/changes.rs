@@ -18,7 +18,7 @@ use asyncgit::{
 };
 use crossterm::event::Event;
 use ratatui::{layout::Rect, Frame};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 ///
 pub struct ChangesComponent {
@@ -28,6 +28,7 @@ pub struct ChangesComponent {
 	queue: Queue,
 	key_config: SharedKeyConfig,
 	options: SharedOptions,
+	directory_line_stats: BTreeMap<String, LineStats>,
 }
 
 impl ChangesComponent {
@@ -44,6 +45,7 @@ impl ChangesComponent {
 			queue: env.queue.clone(),
 			key_config: env.key_config.clone(),
 			options: env.options.clone(),
+			directory_line_stats: BTreeMap::new(),
 			repo: env.repo.clone(),
 		}
 	}
@@ -53,12 +55,43 @@ impl ChangesComponent {
 		&mut self,
 		list: &[StatusItem],
 		line_stats: LineStats,
+		directory_line_stats: BTreeMap<String, LineStats>,
 	) -> Result<()> {
 		self.files.show()?;
 		self.files
 			.set_line_stats((!list.is_empty()).then_some(line_stats));
 		self.files.update(list)?;
+		self.directory_line_stats = directory_line_stats;
 		Ok(())
+	}
+
+	/// The selected directory and its accumulated line changes.
+	pub fn selected_directory_summary(
+		&self,
+	) -> Option<(String, LineStats)> {
+		let item = self.selection()?;
+		let is_directory = match &item.kind {
+			FileTreeItemKind::Path(_) => true,
+			// With status.showUntrackedFiles=normal, git reports an
+			// untracked directory as one status item rather than its files.
+			FileTreeItemKind::File(status) => {
+				self.is_working_dir
+					&& status.status == StatusItemType::New
+					&& self
+						.directory_line_stats
+						.contains_key(&status.path)
+			}
+		};
+		if !is_directory {
+			return None;
+		}
+		let path = item.info.full_path;
+		let stats = self
+			.directory_line_stats
+			.get(&path)
+			.copied()
+			.unwrap_or_default();
+		Some((path, stats))
 	}
 
 	///
@@ -80,6 +113,7 @@ impl ChangesComponent {
 	///
 	pub fn is_file_selected(&self) -> bool {
 		self.files.is_file_selected()
+			&& self.selected_directory_summary().is_none()
 	}
 
 	fn index_add_remove(&self) -> Result<bool> {
@@ -323,5 +357,51 @@ impl Component for ChangesComponent {
 	fn show(&mut self) -> Result<()> {
 		self.files.show()?;
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn collapsed_untracked_directory_is_a_directory_selection() {
+		let env = Environment::test_env();
+		let mut changes =
+			ChangesComponent::new(&env, "Changes", true, true);
+		let stats = LineStats {
+			additions: 2,
+			deletions: 0,
+		};
+		changes
+			.set_items(
+				&[StatusItem {
+					path: "nested".into(),
+					status: StatusItemType::New,
+				}],
+				stats,
+				BTreeMap::from([("nested".into(), stats)]),
+			)
+			.unwrap();
+		assert_eq!(
+			changes.selected_directory_summary(),
+			Some(("nested".into(), stats))
+		);
+		assert!(!changes.is_file_selected());
+
+		let mut staged =
+			ChangesComponent::new(&env, "Staged", true, false);
+		staged
+			.set_items(
+				&[StatusItem {
+					path: "nested".into(),
+					status: StatusItemType::New,
+				}],
+				stats,
+				BTreeMap::from([("nested".into(), stats)]),
+			)
+			.unwrap();
+		assert!(staged.selected_directory_summary().is_none());
+		assert!(staged.is_file_selected());
 	}
 }

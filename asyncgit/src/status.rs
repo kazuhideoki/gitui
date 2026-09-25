@@ -9,6 +9,7 @@ use crate::{
 };
 use crossbeam_channel::Sender;
 use std::{
+	collections::BTreeMap,
 	hash::Hash,
 	sync::{
 		atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -21,6 +22,8 @@ pub struct Status {
 	pub items: Vec<StatusItem>,
 	///
 	pub line_stats: LineStats,
+	/// Line changes below each directory, including nested directories.
+	pub directory_line_stats: BTreeMap<String, LineStats>,
 }
 
 ///
@@ -183,12 +186,16 @@ impl AsyncStatus {
 		status_type: StatusType,
 		config: Option<ShowUntrackedFilesConfig>,
 	) -> Result<Status> {
-		let line_stats = match status_type {
+		let (line_stats, directory_line_stats) = match status_type {
 			StatusType::WorkingDir => {
-				sync::diff::get_diff_line_stats(repo, false, config)?
+				sync::diff::get_diff_line_stats_by_directory(
+					repo, false, config,
+				)?
 			}
 			StatusType::Stage => {
-				sync::diff::get_diff_line_stats(repo, true, config)?
+				sync::diff::get_diff_line_stats_by_directory(
+					repo, true, config,
+				)?
 			}
 			StatusType::Both => {
 				let workdir = sync::diff::get_diff_line_stats(
@@ -198,14 +205,17 @@ impl AsyncStatus {
 					repo, true, config,
 				)?;
 
-				LineStats {
-					additions: workdir
-						.additions
-						.saturating_add(stage.additions),
-					deletions: workdir
-						.deletions
-						.saturating_add(stage.deletions),
-				}
+				(
+					LineStats {
+						additions: workdir
+							.additions
+							.saturating_add(stage.additions),
+						deletions: workdir
+							.deletions
+							.saturating_add(stage.deletions),
+					},
+					BTreeMap::new(),
+				)
 			}
 		};
 
@@ -216,6 +226,7 @@ impl AsyncStatus {
 				config,
 			)?,
 			line_stats,
+			directory_line_stats,
 		})
 	}
 }
