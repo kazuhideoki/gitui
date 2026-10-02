@@ -1341,6 +1341,18 @@ pub mod commands {
 			CMD_GROUP_GENERAL,
 		)
 	}
+	pub fn directory_diff_focus(
+		key_config: &SharedKeyConfig,
+	) -> CommandText {
+		CommandText::new(
+			format!(
+				"Diff [{}]",
+				key_config.get_hint(key_config.keys.enter),
+			),
+			"inspect directory diff",
+			CMD_GROUP_GENERAL,
+		)
+	}
 	pub fn quit(key_config: &SharedKeyConfig) -> CommandText {
 		CommandText::new(
 			format!(

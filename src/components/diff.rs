@@ -194,8 +194,9 @@ impl DiffComponent {
 		(self.current.path.clone(), self.current.is_stage)
 	}
 	///
-	const fn can_edit_file(&self) -> bool {
+	fn can_edit_file(&self) -> bool {
 		!self.current.path.is_empty()
+			&& !self.diff.as_ref().is_some_and(|diff| diff.directory)
 	}
 	///
 	pub fn clear(&mut self, pending: bool) {
@@ -285,6 +286,12 @@ impl DiffComponent {
 		}
 
 		self.current_diff_params = Some(diff_params.clone());
+		if self.diff.as_ref().is_some_and(|diff| diff.directory) {
+			self.syntax_cache = None;
+			self.syntax_progress = None;
+			self.syntax_job.cancel();
+			return;
+		}
 		let has_hunks = self
 			.diff
 			.as_ref()
@@ -1900,6 +1907,88 @@ mod tests {
 	use std::io::Write;
 	use std::rc::Rc;
 	use tempfile::NamedTempFile;
+
+	#[test]
+	fn directory_diff_preserves_hunk_navigation() {
+		let (temp, _repo) = git2_testing::repo_init();
+		let repo_path: asyncgit::sync::RepoPath =
+			temp.path().to_str().unwrap().into();
+		std::fs::create_dir(temp.path().join("dir")).unwrap();
+		let before = "before\n2\n3\n4\n5\n6\n7\n8\n9\nlast before\n";
+		std::fs::write(temp.path().join("dir/first.txt"), before)
+			.unwrap();
+		sync::stage_add_file(&repo_path, Path::new("dir/first.txt"))
+			.unwrap();
+		sync::commit(&repo_path, "before").unwrap();
+		let after = "after\n2\n3\n4\n5\n6\n7\n8\n9\nlast after";
+		std::fs::write(temp.path().join("dir/first.txt"), after)
+			.unwrap();
+		std::fs::write(
+			temp.path().join("dir/second.txt"),
+			"second\n",
+		)
+		.unwrap();
+		for path in ["dir/first.txt", "dir/second.txt"] {
+			sync::stage_add_file(&repo_path, Path::new(path))
+				.unwrap();
+		}
+		let commit = sync::commit(&repo_path, "after").unwrap();
+		let params = DiffParams {
+			path: "dir/".into(),
+			diff_type: asyncgit::DiffType::Commit(commit),
+			options: Default::default(),
+		};
+		let diff = sync::diff::get_diff_commit(
+			&repo_path,
+			commit,
+			"dir/".into(),
+			Some(params.options),
+		)
+		.unwrap();
+		assert_eq!(diff.hunks.len(), 3);
+		assert!(diff.hunks[1]
+			.lines
+			.iter()
+			.any(|line| line.content.as_ref() == "last after"));
+		for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide]
+		{
+			let env = Environment::test_env();
+			*env.repo.borrow_mut() = repo_path.clone();
+			let mut component = DiffComponent::new(&env, true);
+			component.view_mode = mode;
+			component.current_size.set((140, 12));
+			component.focus(true);
+			component.update(
+				"dir/".into(),
+				false,
+				diff.clone(),
+				params.clone(),
+			);
+			assert_eq!(component.selected_hunk, Some(0));
+			assert!(!component.can_edit_file());
+			assert_eq!(
+				component.line_stats(),
+				Some(LineStats {
+					additions: 3,
+					deletions: 2
+				})
+			);
+			component
+				.event(&Event::Key(KeyEvent::new(
+					KeyCode::Char('n'),
+					KeyModifiers::empty(),
+				)))
+				.unwrap();
+			assert_eq!(component.selected_hunk, Some(1));
+			component
+				.event(&Event::Key(KeyEvent::new(
+					KeyCode::Char('p'),
+					KeyModifiers::empty(),
+				)))
+				.unwrap();
+			assert_eq!(component.selected_hunk, Some(0));
+		}
+	}
 
 	#[test]
 	fn test_line_break() {

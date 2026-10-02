@@ -21,7 +21,11 @@ use git2::{
 use scopetime::scope_time;
 use serde::{Deserialize, Serialize};
 use std::{
-	cell::RefCell, collections::BTreeMap, fs, path::Path, rc::Rc,
+	cell::RefCell,
+	collections::BTreeMap,
+	fs,
+	path::{Path, PathBuf},
+	rc::Rc,
 };
 
 /// type of diff of a single line
@@ -118,6 +122,8 @@ pub struct Hunk {
 /// collection of hunks, sum of all diff lines
 #[derive(Default, Clone, Hash, Debug)]
 pub struct FileDiff {
+	/// Whether the diff contains file sections for a directory.
+	pub directory: bool,
 	/// list of hunks
 	pub hunks: Vec<Hunk>,
 	/// lines total summed up over hunks
@@ -337,7 +343,7 @@ fn get_status_diff(
 	Ok(diff)
 }
 
-/// returns diff of a specific file inside a commit
+/// Returns a commit diff for a file, or a directory with a trailing slash.
 /// see `get_commit_diff`
 pub fn get_diff_commit(
 	repo_path: &RepoPath,
@@ -349,18 +355,22 @@ pub fn get_diff_commit(
 
 	let repo = repo(repo_path)?;
 	let work_dir = work_dir(&repo)?;
+	let directory = p.ends_with('/').then(|| PathBuf::from(&p));
 	let diff = get_commit_diff(
 		&repo,
 		id,
-		Some(p),
+		if directory.is_some() { None } else { Some(p) },
 		options,
 		Some(&get_stashes(repo_path)?.into_iter().collect()),
 	)?;
 
-	raw_diff_to_file_diff(&diff, work_dir)
+	directory.map_or_else(
+		|| raw_diff_to_file_diff(&diff, work_dir),
+		|directory| raw_directory_diff(&diff, &directory),
+	)
 }
 
-/// get file changes of a diff between two commits
+/// Returns changes between two commits, recursively for a trailing slash.
 pub fn get_diff_commits(
 	repo_path: &RepoPath,
 	ids: OldNew<CommitId>,
@@ -371,10 +381,135 @@ pub fn get_diff_commits(
 
 	let repo = repo(repo_path)?;
 	let work_dir = work_dir(&repo)?;
-	let diff =
-		get_compare_commits_diff(&repo, ids, Some(p), options)?;
+	let directory = p.ends_with('/').then(|| PathBuf::from(&p));
+	let diff = get_compare_commits_diff(
+		&repo,
+		ids,
+		if directory.is_some() { None } else { Some(p) },
+		options,
+	)?;
 
-	raw_diff_to_file_diff(&diff, work_dir)
+	directory.map_or_else(
+		|| raw_diff_to_file_diff(&diff, work_dir),
+		|directory| raw_directory_diff(&diff, &directory),
+	)
+}
+
+fn raw_directory_diff(
+	diff: &Diff,
+	directory: &Path,
+) -> Result<FileDiff> {
+	let mut result = FileDiff {
+		directory: true,
+		..FileDiff::default()
+	};
+	for (index, delta) in diff.deltas().enumerate() {
+		let Some(path) = delta
+			.new_file()
+			.path()
+			.or_else(|| delta.old_file().path())
+		else {
+			continue;
+		};
+		if !path.starts_with(directory) {
+			continue;
+		}
+		let mut hunks = vec![Hunk {
+			header_hash: hash(&path),
+			lines: vec![DiffLine {
+				content: format!(
+					"diff --git {} ({:?})",
+					path.display(),
+					delta.status()
+				)
+				.into(),
+				line_type: DiffLineType::Header,
+				position: DiffLinePosition::default(),
+			}],
+		}];
+		if let Some(mut patch) = Patch::from_diff(diff, index)? {
+			patch.print(&mut |_, hunk, line| {
+				append_directory_patch_line(
+					&mut hunks, path, hunk, &line,
+				);
+				true
+			})?;
+		} else {
+			hunks[0].lines.push(DiffLine {
+				content: "Binary files differ".into(),
+				..DiffLine::default()
+			});
+		}
+		// Attach file metadata to the first actual hunk, keeping each change
+		// independently navigable without a separate metadata-only stop.
+		if hunks.len() > 1 {
+			let header = hunks.remove(0);
+			hunks[0].lines.splice(0..0, header.lines);
+		}
+		result.lines +=
+			hunks.iter().map(|hunk| hunk.lines.len()).sum::<usize>();
+		result.hunks.extend(hunks);
+	}
+	Ok(result)
+}
+
+fn append_directory_patch_line(
+	hunks: &mut Vec<Hunk>,
+	path: &Path,
+	hunk: Option<DiffHunk<'_>>,
+	line: &git2::DiffLine<'_>,
+) {
+	let origin = line.origin_value();
+	if origin == git2::DiffLineType::FileHeader {
+		for header in String::from_utf8_lossy(line.content()).lines()
+		{
+			if [
+				"old mode ",
+				"new mode ",
+				"new file mode ",
+				"deleted file mode ",
+			]
+			.iter()
+			.any(|prefix| header.starts_with(prefix))
+			{
+				hunks[0].lines.push(DiffLine {
+					content: header.into(),
+					line_type: DiffLineType::Header,
+					position: DiffLinePosition::default(),
+				});
+			}
+		}
+		return;
+	}
+	if origin == git2::DiffLineType::HunkHeader {
+		if let Some(hunk) = hunk {
+			hunks.push(Hunk {
+				header_hash: hash(&(path, HunkHeader::from(hunk))),
+				lines: Vec::new(),
+			});
+		}
+	}
+	let content = if origin == git2::DiffLineType::Binary {
+		"Binary files differ".into()
+	} else {
+		String::from_utf8_lossy(line.content())
+			.trim_matches(is_newline)
+			.into()
+	};
+	let line_type = match origin {
+		// These are informational markers, not added or removed file lines.
+		git2::DiffLineType::ContextEOFNL
+		| git2::DiffLineType::AddEOFNL
+		| git2::DiffLineType::DeleteEOFNL => DiffLineType::None,
+		_ => origin.into(),
+	};
+	if let Some(hunk) = hunks.last_mut() {
+		hunk.lines.push(DiffLine {
+			content,
+			line_type,
+			position: DiffLinePosition::from(line),
+		});
+	}
 }
 
 /// returns the UTF-8 worktree content for diff syntax highlighting
@@ -684,6 +819,127 @@ mod tests {
 		io::Write,
 		path::Path,
 	};
+
+	#[test]
+	fn test_commit_directory_diff() -> Result<()> {
+		let (_td, repo) = repo_init_empty()?;
+		let root = repo.workdir().unwrap();
+		let repo_path: RepoPath = root.to_str().unwrap().into();
+		fs::create_dir_all(root.join("dir[1]/nested"))?;
+		fs::create_dir_all(root.join("dir[1]-sibling"))?;
+		for (path, content) in [
+			(
+				"dir[1]/first.txt",
+				"before\n2\n3\n4\n5\n6\n7\n8\n9\nlast before\n",
+			),
+			("dir[1]/nested/deleted.txt", "deleted\n"),
+			("dir[1]-sibling/outside.txt", "outside\n"),
+		] {
+			fs::write(root.join(path), content)?;
+			stage_add_file(&repo_path, Path::new(path))?;
+		}
+		let old = commit(&repo_path, "before")?;
+		fs::write(
+			root.join("dir[1]/first.txt"),
+			"after\n2\n3\n4\n5\n6\n7\n8\n9\nlast after",
+		)?;
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			fs::set_permissions(
+				root.join("dir[1]/first.txt"),
+				fs::Permissions::from_mode(0o755),
+			)?;
+		}
+		fs::write(root.join("dir[1]/nested/added.txt"), "added\n")?;
+		fs::write(root.join("dir[1]/binary"), b"\0\x01")?;
+		fs::remove_file(root.join("dir[1]/nested/deleted.txt"))?;
+		fs::write(
+			root.join("dir[1]-sibling/outside.txt"),
+			"excluded\n",
+		)?;
+		for path in [
+			"dir[1]/first.txt",
+			"dir[1]/nested/added.txt",
+			"dir[1]/binary",
+			"dir[1]-sibling/outside.txt",
+		] {
+			stage_add_file(&repo_path, Path::new(path))?;
+		}
+		let mut index = repo.index()?;
+		index.remove_path(Path::new("dir[1]/nested/deleted.txt"))?;
+		index.write()?;
+		let new = commit(&repo_path, "after")?;
+		let single =
+			get_diff_commit(&repo_path, new, "dir[1]/".into(), None)?;
+		let comparison = super::get_diff_commits(
+			&repo_path,
+			super::OldNew { old, new },
+			"dir[1]/".into(),
+			None,
+		)?;
+		for diff in [single, comparison] {
+			assert!(diff.directory);
+			assert_eq!(diff.hunks.len(), 5);
+			assert_eq!(
+				diff.hunks[1]
+					.lines
+					.iter()
+					.filter(|line| line.content.starts_with("@@"))
+					.count(),
+				1
+			);
+			assert_eq!(
+				diff.hunks[2]
+					.lines
+					.iter()
+					.filter(|line| line.content.starts_with("@@"))
+					.count(),
+				1
+			);
+			assert_ne!(
+				diff.hunks[1].header_hash,
+				diff.hunks[2].header_hash
+			);
+			assert!(diff.hunks[2]
+				.lines
+				.iter()
+				.any(|line| line.content.as_ref() == "last after"));
+			let lines: Vec<_> =
+				diff.hunks.iter().flat_map(|h| &h.lines).collect();
+			assert_eq!(diff.lines, lines.len());
+			let text = lines
+				.iter()
+				.map(|l| l.content.as_ref())
+				.collect::<Vec<_>>()
+				.join("\n");
+			assert!(text.contains("dir[1]/first.txt"));
+			assert!(text.contains("dir[1]/nested/added.txt"));
+			assert!(text.contains("dir[1]/nested/deleted.txt"));
+			assert!(text.contains("Binary files"), "{text}");
+			#[cfg(unix)]
+			assert!(text.contains("new mode 100755"), "{text}");
+			assert!(!text.contains("outside.txt"));
+			assert_eq!(
+				lines
+					.iter()
+					.filter(
+						|l| l.line_type == super::DiffLineType::Add
+					)
+					.count(),
+				3
+			);
+			assert_eq!(
+				lines
+					.iter()
+					.filter(|l| l.line_type
+						== super::DiffLineType::Delete)
+					.count(),
+				3
+			);
+		}
+		Ok(())
+	}
 
 	#[test]
 	fn test_untracked_subfolder() {
