@@ -122,7 +122,15 @@ impl Component for InspectCommitPopup {
 			);
 
 			out.push(CommandInfo::new(
-				strings::commands::diff_focus_right(&self.key_config),
+				if self.details.files().selection_file().is_none() {
+					strings::commands::directory_diff_focus(
+						&self.key_config,
+					)
+				} else {
+					strings::commands::diff_focus_right(
+						&self.key_config,
+					)
+				},
 				self.can_focus_diff(),
 				!self.diff.focused() || force_all,
 			));
@@ -165,10 +173,17 @@ impl Component for InspectCommitPopup {
 					} else {
 						self.hide_stacked(false);
 					}
-				} else if key_match(
+				} else if (key_match(
 					e,
 					self.key_config.keys.move_right,
-				) && self.can_focus_diff()
+				) || (key_match(
+					e,
+					self.key_config.keys.enter,
+				) && self
+					.details
+					.files()
+					.selection_file()
+					.is_none())) && self.can_focus_diff()
 				{
 					self.details.focus(false);
 					self.diff.focus(true);
@@ -277,10 +292,11 @@ impl InspectCommitPopup {
 	pub fn update_diff(&mut self) -> Result<()> {
 		if self.is_visible() {
 			if let Some(request) = &self.open_request {
-				if let Some(f) = self.details.files().selection_file()
+				if let Some(path) =
+					self.details.files().selection_diff_path()
 				{
 					let diff_params = DiffParams {
-						path: f.path.clone(),
+						path: path.clone(),
 						diff_type: DiffType::Commit(
 							request.commit_id,
 						),
@@ -292,7 +308,7 @@ impl InspectCommitPopup {
 					{
 						if params == diff_params {
 							self.diff.update(
-								f.path,
+								path,
 								false,
 								last,
 								diff_params,
@@ -301,8 +317,18 @@ impl InspectCommitPopup {
 						}
 					}
 
-					self.git_diff.request(diff_params)?;
-					self.diff.clear(true);
+					if let Some(diff) =
+						self.git_diff.request(diff_params.clone())?
+					{
+						self.diff.update(
+							path,
+							false,
+							diff,
+							diff_params,
+						);
+					} else {
+						self.diff.clear(true);
+					}
 					return Ok(());
 				}
 			}
@@ -326,7 +352,7 @@ impl InspectCommitPopup {
 	}
 
 	fn can_focus_diff(&self) -> bool {
-		self.details.files().selection_file().is_some()
+		self.details.files().selection_diff_path().is_some()
 	}
 
 	fn hide_stacked(&mut self, stack: bool) {
@@ -340,6 +366,140 @@ impl InspectCommitPopup {
 			}
 		} else {
 			self.queue.push(InternalEvent::PopupStackPop);
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::popups::CompareCommitsPopup;
+	use asyncgit::sync::{commit, stage_add_file, RepoPath};
+	use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+	use std::{
+		fs,
+		path::Path,
+		time::{Duration, Instant},
+	};
+
+	#[test]
+	fn directory_selection_renders_commit_and_comparison_diffs() {
+		let (temp, repo) = git2_testing::repo_init();
+		let repo_path: RepoPath =
+			temp.path().to_str().unwrap().into();
+		let old =
+			CommitId::new(repo.head().unwrap().target().unwrap());
+		fs::create_dir_all(temp.path().join("dir/nested")).unwrap();
+		for (path, content) in [
+			("dir/first.txt", "first change\n"),
+			("dir/nested/second.txt", "second change\n"),
+		] {
+			fs::write(temp.path().join(path), content).unwrap();
+			stage_add_file(&repo_path, Path::new(path)).unwrap();
+		}
+		let new = commit(&repo_path, "changes").unwrap();
+		let mut env = Environment::test_env();
+		*env.repo.borrow_mut() = repo_path;
+		let (sender, receiver) = crossbeam_channel::unbounded();
+		env.sender_git = sender;
+		let (sender_app, _receiver_app) =
+			crossbeam_channel::unbounded();
+		env.sender_app = sender_app;
+		let mut popup = InspectCommitPopup::new(&env);
+		popup.open(InspectCommitOpen::new(new)).unwrap();
+		wait_inspect(&mut popup, &receiver);
+		assert_eq!(popup.diff.current().0, "dir/");
+		assert!(popup.can_focus_diff());
+		assert_directory_render(&popup);
+
+		// Move from the directory to a file and back using real key events.
+		popup.event(&key(KeyCode::Down)).unwrap();
+		popup.update_diff().unwrap();
+		wait_inspect(&mut popup, &receiver);
+		assert_eq!(popup.diff.current().0, "dir/first.txt");
+		popup.event(&key(KeyCode::Up)).unwrap();
+		popup.update_diff().unwrap();
+		wait_inspect(&mut popup, &receiver);
+		assert_directory_render(&popup);
+		popup.event(&key(KeyCode::Enter)).unwrap();
+		assert!(popup.diff.focused());
+		assert_directory_render(&popup);
+		popup.event(&key(KeyCode::Esc)).unwrap();
+		assert!(!popup.diff.focused());
+		assert_directory_render(&popup);
+
+		let mut comparison = CompareCommitsPopup::new(&env);
+		comparison
+			.open(InspectCommitOpen {
+				commit_id: new,
+				compare_id: Some(old),
+				tags: None,
+			})
+			.unwrap();
+		let deadline = Instant::now() + Duration::from_secs(5);
+		comparison
+			.update_git(AsyncGitNotification::CommitFiles)
+			.unwrap();
+		while comparison.any_work_pending() {
+			assert!(Instant::now() < deadline);
+			if let Ok(ev) =
+				receiver.recv_timeout(Duration::from_millis(10))
+			{
+				comparison.update_git(ev).unwrap();
+			}
+		}
+		comparison
+			.update_git(AsyncGitNotification::CommitFiles)
+			.unwrap();
+		comparison.update_diff().unwrap();
+		assert_directory_render(&comparison);
+		comparison.event(&key(KeyCode::Enter)).unwrap();
+		assert_directory_render(&comparison);
+	}
+
+	fn wait_inspect(
+		popup: &mut InspectCommitPopup,
+		receiver: &crossbeam_channel::Receiver<AsyncGitNotification>,
+	) {
+		let deadline = Instant::now() + Duration::from_secs(5);
+		popup.update_git(AsyncGitNotification::CommitFiles).unwrap();
+		while popup.any_work_pending() {
+			assert!(Instant::now() < deadline);
+			if let Ok(ev) =
+				receiver.recv_timeout(Duration::from_millis(10))
+			{
+				popup.update_git(ev).unwrap();
+			}
+		}
+		popup.update_git(AsyncGitNotification::CommitFiles).unwrap();
+		popup.update_diff().unwrap();
+	}
+
+	fn key(code: KeyCode) -> Event {
+		Event::Key(KeyEvent::new(code, KeyModifiers::empty()))
+	}
+
+	fn assert_directory_render(popup: &impl DrawableComponent) {
+		let mut terminal = ratatui::Terminal::new(
+			ratatui::backend::TestBackend::new(160, 40),
+		)
+		.unwrap();
+		terminal
+			.draw(|frame| popup.draw(frame, frame.area()).unwrap())
+			.unwrap();
+		let rendered = terminal.backend().to_string();
+		assert!(rendered.contains("Diff: dir/"), "{rendered}");
+		assert!(rendered.contains("+2 -0"), "{rendered}");
+		for expected in [
+			"dir/first.txt",
+			"dir/nested/second.txt",
+			"first change",
+			"second change",
+		] {
+			assert!(
+				rendered.contains(expected),
+				"missing {expected}: {rendered}"
+			);
 		}
 	}
 }

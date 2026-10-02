@@ -32,6 +32,7 @@ The `main` branch in this fork carries focused diff-view improvements on top of 
 - Opening a diff selection in the external editor jumps to the corresponding file line when the editor supports line targets
 - Unstaged and staged change panels show total added and deleted line counts in their top borders
 - Selecting a directory in the change tree shows its recursive added and deleted line totals in the diff panel's top-right border
+- Selecting a directory in commit details or commit comparisons shows the diffs of all changed files below it, separated by file paths, with total added and deleted line counts; press Enter to focus the directory diff, and Esc to return to the file tree (Left/Right still collapse/expand directories)
 - Diff colors and syntax highlighting follow the terminal's light or dark background when GitUI starts, with macOS appearance as a fallback
 
 ## Local Install From This Fork

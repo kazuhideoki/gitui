@@ -94,7 +94,15 @@ impl Component for CompareCommitsPopup {
 			);
 
 			out.push(CommandInfo::new(
-				strings::commands::diff_focus_right(&self.key_config),
+				if self.details.files().selection_file().is_none() {
+					strings::commands::directory_diff_focus(
+						&self.key_config,
+					)
+				} else {
+					strings::commands::diff_focus_right(
+						&self.key_config,
+					)
+				},
 				self.can_focus_diff(),
 				!self.diff.focused() || force_all,
 			));
@@ -128,10 +136,17 @@ impl Component for CompareCommitsPopup {
 					} else {
 						self.hide_stacked(false);
 					}
-				} else if key_match(
+				} else if (key_match(
 					e,
 					self.key_config.keys.move_right,
-				) && self.can_focus_diff()
+				) || (key_match(
+					e,
+					self.key_config.keys.enter,
+				) && self
+					.details
+					.files()
+					.selection_file()
+					.is_none())) && self.can_focus_diff()
 				{
 					self.details.focus(false);
 					self.diff.focus(true);
@@ -247,10 +262,11 @@ impl CompareCommitsPopup {
 	pub fn update_diff(&mut self) -> Result<()> {
 		if self.is_visible() {
 			if let Some(ids) = self.get_ids() {
-				if let Some(f) = self.details.files().selection_file()
+				if let Some(path) =
+					self.details.files().selection_diff_path()
 				{
 					let diff_params = DiffParams {
-						path: f.path.clone(),
+						path: path.clone(),
 						diff_type: DiffType::Commits(ids),
 						options: self.options.borrow().diff_options(),
 					};
@@ -260,7 +276,7 @@ impl CompareCommitsPopup {
 					{
 						if params == diff_params {
 							self.diff.update(
-								f.path,
+								path,
 								false,
 								last,
 								diff_params,
@@ -269,8 +285,18 @@ impl CompareCommitsPopup {
 						}
 					}
 
-					self.git_diff.request(diff_params)?;
-					self.diff.clear(true);
+					if let Some(diff) =
+						self.git_diff.request(diff_params.clone())?
+					{
+						self.diff.update(
+							path,
+							false,
+							diff,
+							diff_params,
+						);
+					} else {
+						self.diff.clear(true);
+					}
 					return Ok(());
 				}
 			}
@@ -292,7 +318,7 @@ impl CompareCommitsPopup {
 	}
 
 	fn can_focus_diff(&self) -> bool {
-		self.details.files().selection_file().is_some()
+		self.details.files().selection_diff_path().is_some()
 	}
 
 	fn hide_stacked(&mut self, stack: bool) {

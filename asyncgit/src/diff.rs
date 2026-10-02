@@ -32,7 +32,7 @@ pub enum DiffType {
 ///
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub struct DiffParams {
-	/// path to the file to diff
+	/// File path, or a directory ending in `/` for commit diffs.
 	pub path: String,
 	/// what kind of diff
 	pub diff_type: DiffType,

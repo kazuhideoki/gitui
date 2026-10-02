@@ -92,6 +92,16 @@ impl StatusTreeComponent {
 		self.tree.selected_item()
 	}
 
+	/// Selected diff target; a trailing slash marks a recursive directory.
+	pub fn selection_diff_path(&self) -> Option<String> {
+		self.selection().map(|item| match item.kind {
+			FileTreeItemKind::Path(_) => {
+				format!("{}/", item.info.full_path)
+			}
+			FileTreeItemKind::File(file) => file.path,
+		})
+	}
+
 	///
 	pub fn selection_file(&self) -> Option<StatusItem> {
 		self.tree.selected_item().and_then(|f| {
